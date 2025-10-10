@@ -1,6 +1,7 @@
 # Email Server — Postfix + Dovecot 2.4.x + Let’s Encrypt (DNS‑01 via Cloudflare)
 
-Based on documentation **"Make Your Own Raspberry Pi Email Server""**: https://www.makeuseof.com/make-your-own-raspberry-pi-email-server/
+Based on documentation **"Make Your Own Raspberry Pi Email Server""**
+https://www.makeuseof.com/make-your-own-raspberry-pi-email-server/
 
 ---
 
