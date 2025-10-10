@@ -1,0 +1,11 @@
+# secrets / artefacts locaux
+mail.env
+dns_mail
+sasl_passwd
+sasl_passwd.db
+
+# divers
+*.swp
+*.tmp
+.DS_Store
+
