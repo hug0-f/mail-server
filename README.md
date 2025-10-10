@@ -1,6 +1,6 @@
 # Email Server — Postfix + Dovecot 2.4.x + Let’s Encrypt (DNS‑01 via Cloudflare)
 
-Based on documentation **Make Your Own Raspberry Pi Email Server**: https://www.makeuseof.com/make-your-own-raspberry-pi-email-server/
+Based on documentation **"Make Your Own Raspberry Pi Email Server""**: https://www.makeuseof.com/make-your-own-raspberry-pi-email-server/
 
 ---
 
@@ -23,7 +23,7 @@ This project installs and configures:
 
 ## 0) What the script does (and how to resume)
 
-The installer is split into 7 idempotent steps and can **resume** from any step:
+The installer runs in 7 idempotent steps and can **resume** from any step:
 
 - **0**: system prep (upgrade, purge old mail stack, clean configs)  
 - **1**: install packages  
@@ -53,7 +53,7 @@ If the script aborts, it prints which step you can resume from.
 
 ## 1) Network & Host prerequisites
 
-1. **Static public IPv4/IPv6** on the host (or static NAT + port‑forwarding).
+1. **Static public IPv4/IPv6** on the host (or static NAT with port‑forwarding).
 2. **Open inbound ports** on your firewall/router: **25, 465, 587, 993** (and **110/995** if you will use POP3).
 3. **Reverse DNS (PTR)** for both IPv4/IPv6 → your mail hostname (e.g., `mail.domain.tld`). Ask your provider to set PTR records.
 4. **FQDN & mailname** on the host:
@@ -67,16 +67,15 @@ If the script aborts, it prints which step you can resume from.
 
 ## 2) DNS records (what you need)
 
-Create the following at your DNS provider (Cloudflare if you follow this guide). Keep **mail** host **DNS only** (not proxied).
+Create the following at your DNS provider (Cloudflare if you follow this guide). Keep the **mail** host set to **DNS only** (not proxied).
 
-| Type            | Name                         | Target / Value                                                                                 |
+| Type            | Name                         | Target / Value                                                 |
 |-----------------|------------------------------|----------------------------------------------------------------|
-| **A / AAAA**    | `mail.domain.tld`            | `<IPv4>` / `<IPv6>`                                            |                               |
-| **MX**          | `domain.tld`                 | `mail.domain.tld` (priority 10)                                |                               |
-| **SPF (TXT)**   | `domain.tld`                 | `"v=spf1 mx a:mail.domain.tld ip4:<IPv4> ip6:<IPv6> -all"`     |                              |
-| **DKIM (TXT)**  | `mail._domainkey.domain.tld` | `"v=DKIM1; k=rsa; p=<your-public-DKIM-key>"`                   |                              |
-| **DMARC (TXT)** | `_dmarc.domain.tld`          | `"v=DMARC1; p=reject; rua=mailto:postmaster@domain.tld; fo=1"` |                               |
-
+| **A / AAAA**    | `mail.domain.tld`            | `<IPv4>` / `<IPv6>`                                            | 
+| **MX**          | `domain.tld`                 | `mail.domain.tld` (priority 10)                                | 
+| **SPF (TXT)**   | `domain.tld`                 | `"v=spf1 mx a:mail.domain.tld ip4:<IPv4> ip6:<IPv6> -all"`     | 
+| **DKIM (TXT)**  | `mail._domainkey.domain.tld` | `"v=DKIM1; k=rsa; p=<your-public-DKIM-key>"`                   | 
+| **DMARC (TXT)** | `_dmarc.domain.tld`          | `"v=DMARC1; p=reject; rua=mailto:postmaster@domain.tld; fo=1"` |
 
 **Notes**
 - **A / AAAA**: Point your mail subdomain to the IPv4 and IPv6 addresses of your mail server.
@@ -295,7 +294,7 @@ systemctl status spamd || systemctl status spamassassin
 
 ## 10) Cloudflare Python library 2.20 warning (non‑blocking)
 
-You may see a **PendingDeprecationWarning** originating from the legacy `cloudflare` Python 2.x library (version **2.20.\***). Functionality is unaffected; it’s a notice ahead of a future **3.x** rewrite. The script suppresses that warning during `certbot` runs. You can:
+You may see a **PendingDeprecationWarning** originating from the legacy `cloudflare` Python 2.x library (version **2.20.***). Functionality is unaffected; it’s a notice ahead of a future **3.x** rewrite. The script suppresses that warning during `certbot` runs. You can:
 
 - **Ignore** it (safe).  
 - **Pin** to `cloudflare==2.19.*` if you manage a venv yourself.  
@@ -474,7 +473,7 @@ relay=smtp.relay.domain.com[xxx.xxx.xxx.xxx]:587, status=sent (250 2.0.0 Ok: que
 ### 3. SPF considerations when using an SMTP relay
 
 When you use an external SMTP relay to send outgoing mail, the relay’s servers deliver messages **on behalf of your domain**.
-To ensure SPF and DMARC validation succeed, your domain’s SPF record must **authorize that relay’s servers**.
+To ensure SPF and DMARC validation succeed, your domain’s SPF record must **authorize your relay’s servers**.
 
 You may need to **add an `include:` directive** or the relay’s IP ranges to your SPF record.
 
@@ -511,13 +510,28 @@ v=spf1 mx a:<your-mail-server> include:<relay-provider-SPF-record> -all
 
 ## References (key docs) 
 **Dovecot 2.3 → 2.4 upgrade guide (required dovecot_config_version, new variables, no plugin {})**: https://doc.dovecot.org/main/installation/upgrade/2.3-to-2.4.html
-**Dovecot TLS settings (ssl = yes, ssl_server_cert_file, ssl_server_key_file)**: https://doc.dovecot.org/main/core/config/ssl.html
-**2.4 Mail location (mail_driver, mail_path, mail_inbox_path; autodetection exists but explicit recommended)**: https://doc.dovecot.org/2.4.0/core/config/mailbox/mail_location.html
-**Sieve/Pigeonhole (plugin for LDA/LMTP)**: https://doc.dovecot.org/2.4.0/core/config/sieve/
-**Protocols check (doveconf protocols)**: https://doc.dovecot.org/2.3/admin_manual/test_installation/
-**Certbot Cloudflare plugin (credentials file, security)**: https://certbot-dns-cloudflare.readthedocs.io/_/downloads/en/stable/pdf/
-**Cloudflare API token — Edit zone DNS template / permissions**: https://developers.cloudflare.com/fundamentals/api/get-started/create-token/
-**Cloudflare mail DNS — DNS only**: https://developers.cloudflare.com/dns/manage-dns-records/how-to/email-records/
-**Cloudflare Python library warning (2.20) and 3.x SDK**: https://github.com/cloudflare/python-cloudflare/releases
-**Debian Trixie spamd package (service)**: https://packages.debian.org/trixie/spamd 
 
+**Dovecot TLS settings (ssl = yes, ssl_server_cert_file, ssl_server_key_file)**: https://doc.dovecot.org/main/core/config/ssl.html
+
+**2.4 Mail location (mail_driver, mail_path, mail_inbox_path; autodetection exists but explicit recommended)**: https://doc.dovecot.org/2.4.0/core/config/mailbox/mail_location.html
+
+**Sieve/Pigeonhole (plugin for LDA/LMTP)**
+https://doc.dovecot.org/2.4.0/core/config/sieve/
+
+**Protocols check (doveconf protocols)**
+https://doc.dovecot.org/2.3/admin_manual/test_installation/
+
+**Certbot Cloudflare plugin (credentials file, security)**
+https://certbot-dns-cloudflare.readthedocs.io/_/downloads/en/stable/pdf/
+
+**Cloudflare API token — Edit zone DNS template / permissions**
+https://developers.cloudflare.com/fundamentals/api/get-started/create-token/
+
+**Cloudflare mail DNS — DNS only**
+https://developers.cloudflare.com/dns/manage-dns-records/how-to/email-records/
+
+**Cloudflare Python library warning (2.20) and 3.x SDK**
+https://github.com/cloudflare/python-cloudflare/releases
+
+**Debian Trixie spamd package (service)**
+https://packages.debian.org/trixie/spamd 
