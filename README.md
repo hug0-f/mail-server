@@ -510,11 +510,14 @@ v=spf1 mx a:<your-mail-server> include:<relay-provider-SPF-record> -all
 ---
 
 ## References (key docs) 
-**Dovecot 2.3 → 2.4 upgrade guide (required dovecot_config_version, new variables, no plugin {})**: https://doc.dovecot.org/main/installation/upgrade/2.3-to-2.4.html
+**Dovecot 2.3 → 2.4 upgrade guide (required dovecot_config_version, new variables, no plugin {})**
+https://doc.dovecot.org/main/installation/upgrade/2.3-to-2.4.html
 
-**Dovecot TLS settings (ssl = yes, ssl_server_cert_file, ssl_server_key_file)**: https://doc.dovecot.org/main/core/config/ssl.html
+**Dovecot TLS settings (ssl = yes, ssl_server_cert_file, ssl_server_key_file)**
+https://doc.dovecot.org/main/core/config/ssl.html
 
-**2.4 Mail location (mail_driver, mail_path, mail_inbox_path; autodetection exists but explicit recommended)**: https://doc.dovecot.org/2.4.0/core/config/mailbox/mail_location.html
+**2.4 Mail location (mail_driver, mail_path, mail_inbox_path; autodetection exists but explicit recommended)**
+https://doc.dovecot.org/2.4.0/core/config/mailbox/mail_location.html
 
 **Sieve/Pigeonhole (plugin for LDA/LMTP)**
 https://doc.dovecot.org/2.4.0/core/config/sieve/
