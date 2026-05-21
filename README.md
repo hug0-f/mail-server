@@ -8,9 +8,20 @@ https://www.makeuseof.com/make-your-own-raspberry-pi-email-server/
 This project installs and configures:
 
 - **Postfix** (SMTP: 25/465/587)
-- **Dovecot 2.4.x** (IMAP/POP3: 993/995, optional POP3 110)
+- **Dovecot 2.4.x** (IMAP/POP3: 993/995, optional POP3 110, ManageSieve 4190 in LDAP mode)
 - **OpenDKIM**, **SpamAssassin** (spamd), **Fail2ban**
 - **Let’s Encrypt** certificates via **Certbot** using **Cloudflare** (DNS‑01)
+- **Optional LDAP backend** for virtual users — either an existing LDAP/LDAPS server, or a bundled **LLDAP** instance installed locally
+
+Three operating modes are available, chosen via `ldap.env`:
+
+| Mode       | Auth                          | Mailbox path                            | User provisioning              |
+|------------|-------------------------------|-----------------------------------------|--------------------------------|
+| *(empty)*  | PAM + system users            | `~user/Mail/Inbox/`                     | `adduser <name>`               |
+| `external` | Existing LDAP/LDAPS           | `/var/vmail/<domain>/<user>/Mail/`      | In your existing directory     |
+| `local`    | Bundled LLDAP (installed here)| `/var/vmail/<domain>/<user>/Mail/`      | LLDAP web UI on `:17170`       |
+
+See [§4b LDAP integration](#4b-ldap-integration) for details.
 
 > **Why 2.4 matters:** Dovecot **2.4** is *not* configuration‑compatible with 2.3.  
 > Your `dovecot.conf` **must** begin with:
@@ -22,48 +33,79 @@ This project installs and configures:
 
 ---
 
-## 0) What the script does (and how to resume)
+## 0) What the scripts do (and how to resume)
 
-The installer runs in 7 idempotent steps and can **resume** from any step:
+The repo ships **four** scripts:
 
-- **0**: system prep (upgrade, purge old mail stack, clean configs)  
-- **1**: install packages  
-- **2**: issue/renew Let’s Encrypt certificate (DNS‑01 via Cloudflare)  
-- **3**: configure Postfix  
-- **4**: configure Dovecot 2.4  
-- **5**: configure OpenDKIM and emit DNS records (SPF/DKIM/DMARC/MX)  
+| Script                | Role                                                                                              |
+|-----------------------|---------------------------------------------------------------------------------------------------|
+| `install.sh`          | Orchestrator. Runs `ldap-server.sh` (if `LDAP_MODE` set) then `mail-server.sh`.                   |
+| `ldap-server.sh`      | LDAP backend setup. 4 steps (0..3). Writes `/etc/mail-server/ldap.conf` consumed by mail-server.  |
+| `mail-server.sh`      | Mail stack installer. 7 steps (0..6). Branches on `/etc/mail-server/ldap.conf` (system vs LDAP).  |
+| `migrate-to-ldap.sh`  | One-shot migration of existing system-mode mailboxes to LDAP virtual users.                       |
+
+All scripts are idempotent and resumable.
+
+### `mail-server.sh` steps
+
+- **0**: system prep (upgrade, optional purge, clean configs)
+- **1**: install packages (adds LDAP packages when `/etc/mail-server/ldap.conf` says so)
+- **2**: issue/renew Let’s Encrypt certificate (DNS‑01 via Cloudflare)
+- **3**: configure Postfix (virtual users + LMTP if LDAP active)
+- **4**: configure Dovecot 2.4 (LDAP passdb/userdb + ManageSieve + quota if LDAP active)
+- **5**: configure OpenDKIM, UFW, emit DNS records (SPF/DKIM/DMARC/MX)
 - **6**: enable services and Fail2ban
 
-Run from the beginning:
+### `ldap-server.sh` steps
+
+- **0**: validate `LDAP_MODE`, install packages (`ldap-utils`, `curl`, `openssl`)
+- **1**: configure backend — `external` smoke-tests the connection; `local` downloads and starts LLDAP
+- **2**: write the shared `/etc/mail-server/ldap.conf` (mode 640 root:root)
+- **3**: create the `vmail` Unix user and `/var/vmail`
+
+### Running the stack
+
+Recommended path — let the orchestrator handle everything:
 ```bash
-sudo ./mail-server.sh
-# or explicitly
-sudo ./mail-server.sh --start-step 0
+sudo ./install.sh
 ```
 
-Resume (for example, only step 6):
+Force system mode (no LDAP, even if `ldap.env` has `LDAP_MODE` set):
 ```bash
-sudo ./mail-server.sh --start-step 6
-# or:
-sudo ./mail-server.sh 6
+sudo ./install.sh --skip-ldap
 ```
 
-Run non-interactively (CI/automation) and force purge without prompting:
+Non-interactive (CI/automation), force purge:
 ```bash
-sudo ./mail-server.sh --purge --yes
+sudo ./install.sh --purge --yes
 ```
 
-Available flags:
+Resume from a specific step in a specific script:
+```bash
+sudo ./install.sh --start mail:6        # only mail-server step 6 onward
+sudo ./install.sh --start ldap:2        # only ldap-server step 2 onward
+```
 
-| Flag              | Effect                                                          |
-|-------------------|-----------------------------------------------------------------|
-| `--start-step N`  | Resume from step N (alias: `-s N`, or pass the integer alone).  |
-| `--purge`         | Force the destructive purge in step 0 without prompting.        |
-| `--yes`, `-y`     | Skip confirmation prompts (purge runs without asking).          |
+You can also run any sub-script directly (handy after an abort):
+```bash
+sudo ./mail-server.sh --start-step 4
+sudo ./ldap-server.sh --start-step 2
+```
 
-> By default, step 0 **prompts** before purging the existing mail stack. If you answer "no" (or use neither `--purge` nor `--yes` in a non-interactive run), the purge is skipped and the script proceeds straight to package install.
+### Orchestrator flags
 
-If the script aborts, it prints which step you can resume from.
+| Flag              | Effect                                                                       |
+|-------------------|------------------------------------------------------------------------------|
+| `--skip-ldap`     | Skip `ldap-server.sh` entirely (system mode).                                |
+| `--skip-mail`     | Run `ldap-server.sh` only.                                                   |
+| `--start ldap:N`  | Resume `ldap-server.sh` at step N.                                           |
+| `--start mail:N`  | Resume `mail-server.sh` at step N.                                           |
+| `--purge`         | Force the destructive purge in `mail-server.sh` step 0 without prompting.   |
+| `--yes`, `-y`     | Skip all confirmation prompts.                                               |
+
+> By default, `mail-server.sh` step 0 **prompts** before purging the existing mail stack. Answering "no" (or running non-interactively without `--purge`/`--yes`) skips the purge and proceeds to package install.
+
+If a script aborts, it prints which step you can resume from.
 
 ---
 
@@ -175,7 +217,7 @@ sudo chmod 600 /root/.secrets/certbot/cloudflare.ini
 
 ---
 
-## 4) Environment file (`mail.env`)
+## 4a) Mail environment file (`mail.env`)
 
 Create this next to `mail-server.sh`:
 
@@ -215,23 +257,101 @@ Uncomment only the variables whose defaults you want to change.
 
 ---
 
-## 5) Install / run
+## 4b) LDAP integration
 
-On a fresh Debian 13 / Raspberry Pi:
-
+Even if you don't want LDAP, `ldap.env` **must exist** next to the scripts — `install.sh` errors out if it's missing. Copy the template:
 ```bash
-chmod +x mail-server.sh
-sudo ./mail-server.sh
+cp ldap.env.example ldap.env
 ```
 
-The script:
-1. Upgrades packages, purges any previous Postfix/Dovecot/OpenDKIM/SpamAssassin/Fail2ban/Certbot, and clears old configs.
-2. Installs **Postfix, Dovecot 2.4.x, OpenDKIM, SpamAssassin (spamd), Fail2ban, Certbot, certbot‑dns‑cloudflare**.
-3. Issues or renews a Let’s Encrypt certificate using Cloudflare DNS‑01 and installs a renewal hook that reloads Postfix/Dovecot.
-4. Writes **Dovecot 2.4** config (single file).
-5. Wires **Postfix↔Dovecot SASL**, **OpenDKIM** (milter), **SpamAssassin** filter.
-6. Emits **SPF/DKIM/DMARC/MX** records into `/root/dns_mail` (configurable via `DNS_OUTPUT_FILE`).
-7. Supports **resuming** from any step with `--start-step N` (0..6).
+The single decision is `LDAP_MODE`:
+
+| Value      | What happens                                                                                             |
+|------------|----------------------------------------------------------------------------------------------------------|
+| *(empty)*  | `install.sh` prompts you to confirm **system mode** (PAM + system users). Skipped with `--yes`.          |
+| `external` | `ldap-server.sh` validates a connection to an existing LDAP/LDAPS server.                                 |
+| `local`    | `ldap-server.sh` downloads and installs **LLDAP** on this host, generates an admin password.             |
+
+### `ldap.env` variables
+
+```bash
+LDAP_MODE=external
+
+# External LDAP
+LDAP_URI=ldaps://ldap.example.com:636
+LDAP_BASE_DN=dc=example,dc=com
+LDAP_BIND_DN=cn=mail-reader,ou=services,dc=example,dc=com
+LDAP_BIND_PW=                                    # prompted if empty
+LDAP_USER_FILTER=(&(objectClass=inetOrgPerson)(mail=%u))
+LDAP_USER_ATTR=mail
+LDAP_TLS_CA=/etc/ssl/certs/ca-certificates.crt
+LDAP_TLS_REQUIRE_CERT=demand
+
+# Local LLDAP (only used when LDAP_MODE=local)
+# LLDAP_VERSION=v0.6.1
+# LLDAP_ADMIN_PASSWORD=                          # generated if empty
+# LLDAP_HTTP_PORT=17170
+# LLDAP_LDAP_PORT=3890
+
+# Common
+# LDAP_VMAIL_UID=5000
+# LDAP_QUOTA_DEFAULT=1G
+```
+
+### What changes when LDAP is active
+
+| Aspect              | System mode              | LDAP mode                                                |
+|---------------------|--------------------------|----------------------------------------------------------|
+| Authentication      | PAM, system users        | LDAP bind (auth_bind), full email as login                |
+| Mailbox path        | `~user/Mail/Inbox/`      | `/var/vmail/<domain>/<user>/Mail/Inbox/`                  |
+| Mail owner          | each user's UID          | `vmail:vmail` (UID 5000 by default)                       |
+| Local delivery      | Dovecot LDA              | Dovecot LMTP (`private/dovecot-lmtp`)                     |
+| Sieve filters       | one global `default.sieve` | per-user under `~/sieve/`, global as fallback           |
+| ManageSieve         | not enabled              | enabled on port 4190 (UFW opened automatically)           |
+| Quota               | none                     | `1G` default per box (overridable via `LDAP_QUOTA_DEFAULT`) |
+| Sender login map    | PCRE `user@domain → user`| LDAP query on `mail` attribute                             |
+| Packages added      | —                        | `dovecot-ldap`, `dovecot-lmtpd`, `dovecot-managesieved`, `postfix-ldap` |
+
+### Local LLDAP specifics
+
+When `LDAP_MODE=local`:
+
+- The LLDAP `.deb` is downloaded from the official GitHub release pinned by `LLDAP_VERSION`.
+- The service listens on `127.0.0.1:3890` (plain LDAP) and `127.0.0.1:17170` (web UI). LDAPS is **not** enabled by default (loopback only — no exposure).
+- The admin credentials are written to **`/root/lldap_admin`** (mode 600).
+- To reach the web UI from your workstation, SSH-tunnel it:
+  ```bash
+  ssh -L 17170:127.0.0.1:17170 youruser@mailserver
+  # then open http://localhost:17170 in your browser
+  ```
+- Create users in the UI; the **`mail`** attribute is what Dovecot/Postfix query.
+
+### Shared config file
+
+`ldap-server.sh` writes **`/etc/mail-server/ldap.conf`** (mode 640 root:root) after configuring the backend. `mail-server.sh` sources this file at startup and switches to LDAP mode if `LDAP_ENABLED=1`. Do not edit it manually — re-run `ldap-server.sh` instead.
+
+---
+
+## 5) Install / run
+
+On a fresh Debian 13 / Raspberry Pi, after creating `mail.env` and `ldap.env`:
+
+```bash
+chmod +x install.sh mail-server.sh ldap-server.sh migrate-to-ldap.sh
+sudo ./install.sh
+```
+
+`install.sh`:
+1. Verifies `ldap.env` exists; reads `LDAP_MODE`.
+2. If `LDAP_MODE` is set → runs `ldap-server.sh` (creates `vmail` user, writes `/etc/mail-server/ldap.conf`, optionally installs LLDAP).
+3. Runs `mail-server.sh`:
+   - Upgrades packages, purges previous Postfix/Dovecot/OpenDKIM/SpamAssassin/Fail2ban/Certbot (optional, gated by a prompt).
+   - Installs **Postfix, Dovecot 2.4.x, OpenDKIM, SpamAssassin, Fail2ban, Certbot, certbot‑dns‑cloudflare** (+ LDAP/LMTP/ManageSieve packages in LDAP mode).
+   - Issues or renews a Let’s Encrypt certificate via Cloudflare DNS‑01 and installs a renewal hook that reloads Postfix/Dovecot.
+   - Writes **Dovecot 2.4** config (single file, branched by mode).
+   - Wires **Postfix↔Dovecot SASL**, **OpenDKIM** (milter), **SpamAssassin** filter. In LDAP mode: also virtual maps, LMTP transport, quota, ManageSieve.
+   - Emits **SPF/DKIM/DMARC/MX** records into `/root/dns_mail` (configurable via `DNS_OUTPUT_FILE`).
+4. Each sub-script can resume from any step independently — see [§0](#0-what-the-scripts-do-and-how-to-resume).
 
 ---
 
@@ -364,26 +484,86 @@ fail2ban-client status
 **Protocols check**
 ```bash
 doveconf protocols
-# expect: "protocols = imap pop3" (or more if you enable others)
+# system mode: "protocols = imap pop3"
+# LDAP mode:   "protocols = imap pop3 lmtp sieve"
+```
+
+**LDAP mode — verify the backend**
+```bash
+cat /etc/mail-server/ldap.conf | grep ^LDAP_ENABLED          # expect LDAP_ENABLED=1
+doveadm user -u alice@domain.tld                              # should resolve via LDAP
+postmap -q alice@domain.tld ldap:/etc/postfix/ldap-virtual-mailbox.cf
 ```
 
 ---
 
-## 12) Add mail users (system accounts)
+## 12) Add mail users
 
-This setup authenticates via **PAM** with **system users**. Example:
+User provisioning depends on the mode you chose in `ldap.env`.
+
+### 12a) System mode (no LDAP)
+
+PAM authenticates against system users:
 ```bash
 sudo adduser alice
 # IMAP:  mail.domain.tld:993  (SSL/TLS)
 # SMTP:  mail.domain.tld:587  (STARTTLS, auth required)
 # User:  alice   (system account)
 ```
-Mailbox will live under `~alice/Mail/Inbox/…` (Maildir) because `mail_driver`, `mail_path`, and `mail_inbox_path` are set explicitly for Dovecot 2.4.
+Mailbox lives under `~alice/Mail/Inbox/…` (Maildir).
 
 **Postmaster alias** (recommended):
 ```bash
 echo "postmaster: alice" | sudo tee -a /etc/aliases
 sudo newaliases
+```
+
+### 12b) `LDAP_MODE=external`
+
+Create the user in your existing LDAP directory. The user must have the **`mail`** attribute (matching what `LDAP_USER_FILTER` queries — `mail=%u` by default). The login is the **full email address**.
+
+Minimal LDIF example:
+```ldif
+dn: uid=alice,ou=people,dc=example,dc=com
+objectClass: inetOrgPerson
+objectClass: person
+uid: alice
+cn: alice
+sn: alice
+mail: alice@domain.tld
+userPassword: <plain or hashed>
+```
+
+The mailbox directory is auto-created on first delivery under `/var/vmail/<domain>/<user>/`.
+
+### 12c) `LDAP_MODE=local` (LLDAP)
+
+1. Tunnel the LLDAP UI:
+   ```bash
+   ssh -L 17170:127.0.0.1:17170 root@mailserver
+   ```
+2. Open `http://localhost:17170` and log in with the credentials in `/root/lldap_admin`.
+3. **Create User** → fill `User ID`, `Email`, `Display Name`, set a password.
+4. The mailbox is auto-created on first delivery.
+
+### Migrating an existing system-mode install to LDAP
+
+If you already have system users with mailboxes and want to switch to LDAP without losing mail:
+
+```bash
+sudo ./migrate-to-ldap.sh --dry-run    # preview
+sudo ./migrate-to-ldap.sh              # apply
+```
+
+This:
+- Discovers users with `~/Mail/` directories (UID 1000–60000).
+- Moves their maildirs to `/var/vmail/<domain>/<user>/Mail/` and chowns `vmail:vmail`.
+- Generates `/root/ldap-migration/users.ldif` and `/root/ldap-migration/passwords.txt` (both mode 600).
+- Prints the import command (`ldapadd` for `external`, UI instructions for `local`).
+
+After importing the LDIF and distributing temporary passwords, shred the file:
+```bash
+sudo shred -u /root/ldap-migration/passwords.txt
 ```
 
 ---
@@ -423,11 +603,20 @@ On Debian 13, prefer `spamd.service` (package `spamd`). If it’s missing, insta
 
 ## 15) Uninstall / purge (optional)
 
+Mail stack:
 ```bash
 sudo systemctl stop postfix dovecot opendkim spamd spamassassin fail2ban || true
 sudo apt-get purge -y --auto-remove postfix dovecot-* opendkim* spamassassin spamc spamd fail2ban certbot
 sudo rm -rf /etc/dovecot /var/lib/dovecot /etc/postfix /etc/opendkim /var/lib/opendkim \
             /etc/fail2ban/jail.d/mail.local /etc/letsencrypt/renewal-hooks/deploy/reload-mail-services.sh
+```
+
+LDAP integration (if installed):
+```bash
+sudo systemctl stop lldap || true
+sudo apt-get purge -y --auto-remove lldap || true
+sudo rm -rf /etc/lldap /var/lib/lldap /etc/mail-server /var/vmail /root/lldap_admin /root/ldap-migration
+sudo userdel -r vmail 2>/dev/null || true
 ```
 ## 16) SMTP Relay Configuration Guide (Postfix / Dovecot)
 
