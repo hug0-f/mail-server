@@ -64,7 +64,7 @@ write_postfix_ldap_cf() {
 }
 
 # === Environment ===
-ENV_FILE="${ENV_FILE:-./mail-server.env}"
+ENV_FILE="${ENV_FILE:-./mail.env}"
 # shellcheck disable=SC1090
 [ -f "$ENV_FILE" ] && . "$ENV_FILE"
 
