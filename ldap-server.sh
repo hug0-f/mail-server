@@ -151,33 +151,76 @@ install_lldap() {
     echo "[lldap] Generated new admin password."
   fi
 
-  local arch deb_arch deb_file deb_url version_num
+  if ! getent group lldap >/dev/null; then
+    groupadd -r lldap
+  fi
+  if ! id lldap >/dev/null 2>&1; then
+    useradd -r -g lldap -d /var/lib/lldap -s /usr/sbin/nologin lldap
+  fi
+
+  local arch tar_arch tar_file tar_url
   arch=$(uname -m)
   case "$arch" in
-    x86_64)         deb_arch=amd64 ;;
-    aarch64)        deb_arch=arm64 ;;
-    armv7l|armv6l)  deb_arch=armhf ;;
+    x86_64)         tar_arch=amd64 ;;
+    aarch64)        tar_arch=aarch64 ;;
+    armv7l|armv6l)  tar_arch=armhf ;;
     *) echo "Error: unsupported arch '$arch' for LLDAP." >&2; exit 1 ;;
   esac
-  version_num="${LLDAP_VERSION#v}"
-  deb_file="lldap_${version_num}-1_${deb_arch}.deb"
-  deb_url="https://github.com/lldap/lldap/releases/download/${LLDAP_VERSION}/${deb_file}"
+  tar_file="${tar_arch}-lldap.tar.gz"
+  tar_url="https://github.com/lldap/lldap/releases/download/${LLDAP_VERSION}/${tar_file}"
 
-  if ! dpkg -s lldap >/dev/null 2>&1; then
-    echo "[lldap] Downloading $deb_url..."
+  if [ ! -x /usr/local/sbin/lldap ]; then
+    echo "[lldap] Downloading $tar_url..."
     local tmp
     tmp=$(mktemp -d)
-    if ! curl -fsSL -o "$tmp/$deb_file" "$deb_url"; then
-      echo "Error: failed to download $deb_url" >&2
+    if ! curl -fsSL -o "$tmp/$tar_file" "$tar_url"; then
+      echo "Error: failed to download $tar_url" >&2
       echo "       Verify LLDAP_VERSION and asset name at https://github.com/lldap/lldap/releases" >&2
       rm -rf "$tmp"
       exit 1
     fi
-    [ -s "$tmp/$deb_file" ] || { echo "Error: downloaded file is empty." >&2; rm -rf "$tmp"; exit 1; }
-    apt-get install -y "$tmp/$deb_file"
+    [ -s "$tmp/$tar_file" ] || { echo "Error: downloaded file is empty." >&2; rm -rf "$tmp"; exit 1; }
+    tar xzf "$tmp/$tar_file" -C "$tmp"
+    install -m 0755 "$tmp/${tar_arch}-lldap/lldap"                 /usr/local/sbin/lldap
+    install -m 0755 "$tmp/${tar_arch}-lldap/lldap_set_password"    /usr/local/sbin/lldap_set_password
+    install -m 0755 "$tmp/${tar_arch}-lldap/lldap_migration_tool"  /usr/local/sbin/lldap_migration_tool
+    rm -rf /usr/local/share/lldap
+    mkdir -p /usr/local/share/lldap
+    cp -r "$tmp/${tar_arch}-lldap/app" /usr/local/share/lldap/app
     rm -rf "$tmp"
+    echo "[lldap] Binaries installed under /usr/local/sbin, web assets under /usr/local/share/lldap."
   else
-    echo "[lldap] Package already installed."
+    echo "[lldap] Binary already installed at /usr/local/sbin/lldap."
+  fi
+
+  mkdir -p /var/lib/lldap
+  chown lldap:lldap /var/lib/lldap
+  chmod 750 /var/lib/lldap
+  ln -sfn /usr/local/share/lldap/app /var/lib/lldap/app
+
+  if [ ! -f /etc/systemd/system/lldap.service ]; then
+    cat > /etc/systemd/system/lldap.service <<'EOF'
+[Unit]
+Description=Light LDAP server
+After=network.target
+
+[Service]
+Type=simple
+User=lldap
+Group=lldap
+WorkingDirectory=/var/lib/lldap
+ExecStart=/usr/local/sbin/lldap run --config-file /etc/lldap/lldap_config.toml
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/lldap
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
   fi
 
   mkdir -p /etc/lldap
@@ -198,9 +241,11 @@ ldap_user_dn = "admin"
 ldap_user_email = "admin@mail.local"
 ldap_user_pass = "${LLDAP_ADMIN_PASSWORD}"
 jwt_secret = "${jwt_secret}"
+database_url = "sqlite:///var/lib/lldap/users.db?mode=rwc"
+key_file = "/var/lib/lldap/server_key"
 EOF
 )
-  chown root:lldap "$tmp_cfg" 2>/dev/null || true
+  chown root:lldap "$tmp_cfg"
   mv "$tmp_cfg" /etc/lldap/lldap_config.toml
 
   (umask 0077 && cat > /root/lldap_admin <<EOF

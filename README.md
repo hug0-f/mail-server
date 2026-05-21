@@ -614,11 +614,14 @@ sudo rm -rf /etc/dovecot /var/lib/dovecot /etc/postfix /etc/opendkim /var/lib/op
 
 LDAP integration (if installed):
 ```bash
-sudo systemctl stop lldap || true
-sudo apt-get purge -y --auto-remove lldap || true
-sudo rm -rf /etc/lldap /var/lib/lldap /etc/mail-server /var/vmail \
+sudo systemctl disable --now lldap 2>/dev/null || true
+sudo rm -f /etc/systemd/system/lldap.service
+sudo rm -f /usr/local/sbin/lldap /usr/local/sbin/lldap_set_password /usr/local/sbin/lldap_migration_tool
+sudo rm -rf /usr/local/share/lldap /etc/lldap /var/lib/lldap /etc/mail-server /var/vmail \
             /root/lldap_admin /root/lldap_mail_reader /root/ldap-migration
-sudo userdel -r vmail 2>/dev/null || true
+sudo userdel -r vmail  2>/dev/null || true
+sudo userdel    lldap  2>/dev/null || true
+sudo systemctl daemon-reload
 ```
 ## 16) SMTP Relay Configuration Guide (Postfix / Dovecot)
 
