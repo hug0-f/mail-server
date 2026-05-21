@@ -300,11 +300,27 @@ mailbox_list_layout = fs
 
 namespace inbox {
   inbox = yes
-  mailbox Drafts  { special_use = \Drafts  ; auto = subscribe }
-  mailbox Junk    { special_use = \Junk    ; auto = subscribe ; autoexpunge = 30d }
-  mailbox Sent    { special_use = \Sent    ; auto = subscribe }
-  mailbox Trash   { special_use = \Trash   ; auto = subscribe }
-  mailbox Archive { special_use = \Archive ; auto = create    }
+  mailbox Drafts {
+    special_use = \Drafts
+    auto = subscribe
+  }
+  mailbox Junk {
+    special_use = \Junk
+    auto = subscribe
+    autoexpunge = 30d
+  }
+  mailbox Sent {
+    special_use = \Sent
+    auto = subscribe
+  }
+  mailbox Trash {
+    special_use = \Trash
+    auto = subscribe
+  }
+  mailbox Archive {
+    special_use = \Archive
+    auto = create
+  }
 }
 
 service auth {
@@ -315,8 +331,16 @@ service auth {
   }
 }
 
-protocol lda  { mail_plugins { sieve = yes } }
-protocol lmtp { mail_plugins { sieve = yes } }
+protocol lda {
+  mail_plugins {
+    sieve = yes
+  }
+}
+protocol lmtp {
+  mail_plugins {
+    sieve = yes
+  }
+}
 
 protocol pop3 {
   pop3_uidl_format = %{uid | hex(8)}%{uidvalidity | hex(8)}
@@ -383,27 +407,41 @@ mailbox_list_layout = fs
 
 namespace inbox {
   inbox = yes
-  mailbox Drafts  { special_use = \Drafts  ; auto = subscribe }
-  mailbox Junk    { special_use = \Junk    ; auto = subscribe ; autoexpunge = 30d }
-  mailbox Sent    { special_use = \Sent    ; auto = subscribe }
-  mailbox Trash   { special_use = \Trash   ; auto = subscribe }
-  mailbox Archive { special_use = \Archive ; auto = create    }
+  mailbox Drafts {
+    special_use = \Drafts
+    auto = subscribe
+  }
+  mailbox Junk {
+    special_use = \Junk
+    auto = subscribe
+    autoexpunge = 30d
+  }
+  mailbox Sent {
+    special_use = \Sent
+    auto = subscribe
+  }
+  mailbox Trash {
+    special_use = \Trash
+    auto = subscribe
+  }
+  mailbox Archive {
+    special_use = \Archive
+    auto = create
+  }
 }
 
-mail_plugins = \$mail_plugins quota
-
-plugin {
-  quota = count:User quota
-  quota_status_success = DUNNO
-  quota_status_nouser = DUNNO
-  quota_status_overquota = "552 5.2.2 Mailbox full"
-  quota_grace = 10%%
-  quota_rule = *:storage=$LDAP_QUOTA_DEFAULT
-
-  sieve = file:~/sieve;active=~/.dovecot.sieve
-  sieve_default = /var/lib/dovecot/sieve/default.sieve
-  sieve_default_name = default
+mail_plugins {
+  quota = yes
 }
+
+quota_status_success = DUNNO
+quota_status_nouser = DUNNO
+quota_status_overquota = "552 5.2.2 Mailbox full"
+quota_grace = 10%%
+quota_rule = *:storage=$LDAP_QUOTA_DEFAULT
+
+sieve_script_storage = /var/lib/dovecot/sieve
+sieve_before = /var/lib/dovecot/sieve/default.sieve
 
 service auth {
   unix_listener /var/spool/postfix/private/auth {
@@ -427,8 +465,18 @@ service managesieve-login {
   }
 }
 
-protocol lmtp { mail_plugins { sieve = yes ; quota = yes } }
-protocol imap { mail_plugins { quota = yes ; imap_quota = yes } }
+protocol lmtp {
+  mail_plugins {
+    sieve = yes
+    quota = yes
+  }
+}
+protocol imap {
+  mail_plugins {
+    quota = yes
+    imap_quota = yes
+  }
+}
 
 protocol pop3 {
   pop3_uidl_format = %{uid | hex(8)}%{uidvalidity | hex(8)}
