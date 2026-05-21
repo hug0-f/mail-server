@@ -288,7 +288,7 @@ LDAP_TLS_CA=/etc/ssl/certs/ca-certificates.crt
 LDAP_TLS_REQUIRE_CERT=demand
 
 # Local LLDAP (only used when LDAP_MODE=local)
-# LLDAP_VERSION=v0.6.1
+# LLDAP_VERSION=v0.6.3
 # LLDAP_ADMIN_PASSWORD=                          # generated if empty
 # LLDAP_HTTP_PORT=17170
 # LLDAP_LDAP_PORT=3890

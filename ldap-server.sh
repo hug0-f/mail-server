@@ -75,7 +75,7 @@ step1() {
 }
 
 install_lldap() {
-  : "${LLDAP_VERSION:=v0.6.1}"
+  : "${LLDAP_VERSION:=v0.6.3}"
   : "${LLDAP_HTTP_PORT:=17170}"
   : "${LLDAP_LDAP_PORT:=3890}"
   : "${LLDAP_LDAPS_PORT:=6360}"
