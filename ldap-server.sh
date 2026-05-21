@@ -358,7 +358,16 @@ step3() {
     groupadd -g "$LDAP_VMAIL_UID" vmail
   fi
   if ! id vmail >/dev/null 2>&1; then
-    useradd -r -u "$LDAP_VMAIL_UID" -g vmail -d /var/vmail -s /usr/sbin/nologin vmail
+    useradd -u "$LDAP_VMAIL_UID" -g vmail -d /var/vmail -M -s /usr/sbin/nologin vmail
+  fi
+  local actual_uid actual_gid
+  actual_uid=$(id -u vmail)
+  actual_gid=$(id -g vmail)
+  if [ "$actual_uid" != "$LDAP_VMAIL_UID" ] || [ "$actual_gid" != "$LDAP_VMAIL_UID" ]; then
+    echo "[vmail] Correcting UID/GID drift ($actual_uid:$actual_gid -> $LDAP_VMAIL_UID:$LDAP_VMAIL_UID)..."
+    groupmod -g "$LDAP_VMAIL_UID" vmail
+    usermod  -u "$LDAP_VMAIL_UID" -g "$LDAP_VMAIL_UID" vmail
+    [ -d /var/vmail ] && chown -R "$LDAP_VMAIL_UID:$LDAP_VMAIL_UID" /var/vmail
   fi
   mkdir -p /var/vmail
   chown vmail:vmail /var/vmail
