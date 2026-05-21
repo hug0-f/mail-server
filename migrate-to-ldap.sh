@@ -117,9 +117,11 @@ case "${LDAP_MODE:-external}" in
   local)
     cat <<EOF
 Next steps (LLDAP local mode):
-  1. Open the LLDAP web UI (credentials in /root/lldap_admin).
-  2. Create one user per line in $PWFILE (set 'mail' attribute to the email).
-  3. Once verified, securely delete the temporary credentials:
+  1. Review $LDIF before importing.
+  2. Import using the LLDAP admin (mail-reader is read-only):
+       ldapadd -x -H $LDAP_URI -D uid=admin,ou=people,$LDAP_BASE_DN -W -f $LDIF
+     (Admin password is in /root/lldap_admin. LLDAP will hash userPassword on insert.)
+  3. Distribute the temporary passwords from $PWFILE, then:
        shred -u $PWFILE
 EOF
     ;;
