@@ -319,6 +319,7 @@ When `LDAP_MODE=local`:
 - The LLDAP `.deb` is downloaded from the official GitHub release pinned by `LLDAP_VERSION`.
 - The service listens on `127.0.0.1:3890` (plain LDAP) and `127.0.0.1:17170` (web UI). LDAPS is **not** enabled by default (loopback only — no exposure).
 - The admin credentials are written to **`/root/lldap_admin`** (mode 600).
+- After LLDAP starts, `ldap-server.sh` provisions a dedicated **`mail-reader`** service account (member of the built-in `lldap_strict_readonly` group) and uses it as the Dovecot/Postfix bind DN. Credentials in **`/root/lldap_mail_reader`**. The admin account is no longer used for mail authentication queries.
 - To reach the web UI from your workstation, SSH-tunnel it:
   ```bash
   ssh -L 17170:127.0.0.1:17170 youruser@mailserver
@@ -615,7 +616,8 @@ LDAP integration (if installed):
 ```bash
 sudo systemctl stop lldap || true
 sudo apt-get purge -y --auto-remove lldap || true
-sudo rm -rf /etc/lldap /var/lib/lldap /etc/mail-server /var/vmail /root/lldap_admin /root/ldap-migration
+sudo rm -rf /etc/lldap /var/lib/lldap /etc/mail-server /var/vmail \
+            /root/lldap_admin /root/lldap_mail_reader /root/ldap-migration
 sudo userdel -r vmail 2>/dev/null || true
 ```
 ## 16) SMTP Relay Configuration Guide (Postfix / Dovecot)

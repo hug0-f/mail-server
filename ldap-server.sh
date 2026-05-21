@@ -74,6 +74,68 @@ step1() {
   esac
 }
 
+lldap_provision_service_account() {
+  local admin_dn="uid=admin,ou=people,dc=mail,dc=local"
+  local mr_dn="uid=mail-reader,ou=people,dc=mail,dc=local"
+  local group_dn="cn=lldap_strict_readonly,ou=groups,dc=mail,dc=local"
+  local mr_pw=""
+
+  if [ -f /root/lldap_mail_reader ]; then
+    mr_pw=$(awk -F': ' '/^Password:/ {print $2; exit}' /root/lldap_mail_reader || true)
+    [ -n "$mr_pw" ] && echo "[lldap] Reusing existing mail-reader password from /root/lldap_mail_reader."
+  fi
+  [ -n "$mr_pw" ] || mr_pw=$(openssl rand -hex 16)
+
+  local ldap_uri="ldap://127.0.0.1:${LLDAP_LDAP_PORT}"
+  if ldapsearch -x -H "$ldap_uri" -D "$admin_dn" -w "$LLDAP_ADMIN_PASSWORD" \
+       -b "$mr_dn" -s base >/dev/null 2>&1; then
+    echo "[lldap] mail-reader exists; resetting password."
+    ldapmodify -x -H "$ldap_uri" -D "$admin_dn" -w "$LLDAP_ADMIN_PASSWORD" >/dev/null <<EOF
+dn: $mr_dn
+changetype: modify
+replace: userPassword
+userPassword: $mr_pw
+EOF
+  else
+    echo "[lldap] Creating mail-reader service account..."
+    ldapadd -x -H "$ldap_uri" -D "$admin_dn" -w "$LLDAP_ADMIN_PASSWORD" >/dev/null <<EOF
+dn: $mr_dn
+objectClass: inetOrgPerson
+objectClass: person
+uid: mail-reader
+cn: Mail Reader
+sn: Reader
+mail: mail-reader@mail.local
+userPassword: $mr_pw
+EOF
+  fi
+
+  if ldapsearch -x -H "$ldap_uri" -D "$admin_dn" -w "$LLDAP_ADMIN_PASSWORD" \
+       -b "$group_dn" -s base >/dev/null 2>&1; then
+    ldapmodify -x -H "$ldap_uri" -D "$admin_dn" -w "$LLDAP_ADMIN_PASSWORD" >/dev/null 2>&1 <<EOF || true
+dn: $group_dn
+changetype: modify
+add: member
+member: $mr_dn
+EOF
+  else
+    echo "[lldap] Warning: $group_dn not found; mail-reader will have no read access."
+    echo "        Create the group 'lldap_strict_readonly' in the LLDAP UI and add mail-reader to it."
+  fi
+
+  (umask 0077 && cat > /root/lldap_mail_reader <<EOF
+LLDAP service account credentials
+=================================
+DN:       $mr_dn
+Password: $mr_pw
+EOF
+)
+  echo "[lldap] mail-reader credentials stored in /root/lldap_mail_reader (mode 600)."
+
+  LDAP_BIND_DN="$mr_dn"
+  LDAP_BIND_PW="$mr_pw"
+}
+
 install_lldap() {
   : "${LLDAP_VERSION:=v0.6.3}"
   : "${LLDAP_HTTP_PORT:=17170}"
@@ -173,10 +235,10 @@ EOF
 
   LDAP_URI="ldap://127.0.0.1:${LLDAP_LDAP_PORT}"
   LDAP_BASE_DN="dc=mail,dc=local"
-  LDAP_BIND_DN="uid=admin,ou=people,dc=mail,dc=local"
-  LDAP_BIND_PW="$LLDAP_ADMIN_PASSWORD"
   LDAP_USER_FILTER='(&(objectClass=person)(mail=%u))'
   LDAP_USER_ATTR="mail"
+
+  lldap_provision_service_account
   LDAP_TLS_CA=""
   LDAP_TLS_REQUIRE_CERT="never"
   echo "[lldap] Derived LDAP variables for local backend."
