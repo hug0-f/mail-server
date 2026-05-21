@@ -290,6 +290,7 @@ LDAP_TLS_REQUIRE_CERT=demand
 # Local LLDAP (only used when LDAP_MODE=local)
 # LLDAP_VERSION=v0.6.3
 # LLDAP_ADMIN_PASSWORD=                          # generated if empty
+# LLDAP_HTTP_HOST=127.0.0.1                      # set to 0.0.0.0 to expose UI on LAN
 # LLDAP_HTTP_PORT=17170
 # LLDAP_LDAP_PORT=3890
 
@@ -317,7 +318,7 @@ LDAP_TLS_REQUIRE_CERT=demand
 When `LDAP_MODE=local`:
 
 - The LLDAP `.deb` is downloaded from the official GitHub release pinned by `LLDAP_VERSION`.
-- The service listens on `127.0.0.1:3890` (plain LDAP) and `127.0.0.1:17170` (web UI). LDAPS is **not** enabled by default (loopback only — no exposure).
+- The LDAP service listens on `127.0.0.1:3890` (plain LDAP, loopback only). The web UI listens on `$LLDAP_HTTP_HOST:17170` (default `127.0.0.1`). Set `LLDAP_HTTP_HOST=0.0.0.0` in `ldap.env` to expose the UI on the LAN — the script then opens UFW port 17170 automatically. LDAPS is not enabled by default.
 - The admin credentials are written to **`/root/lldap_admin`** (mode 600).
 - Dovecot/Postfix bind as `uid=admin,ou=people,dc=mail,dc=local` (LLDAP's built-in admin). LLDAP does not support group-membership management via the LDAP protocol — only via GraphQL or the web UI — so a least-privilege service account would require GraphQL provisioning. Kept on the to-do list; for now the admin account is the bind identity.
 - To reach the web UI from your workstation, SSH-tunnel it:

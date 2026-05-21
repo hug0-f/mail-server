@@ -79,6 +79,7 @@ install_lldap() {
   : "${LLDAP_HTTP_PORT:=17170}"
   : "${LLDAP_LDAP_PORT:=3890}"
   : "${LLDAP_LDAPS_PORT:=6360}"
+  : "${LLDAP_HTTP_HOST:=127.0.0.1}"
 
   if [ -z "${LLDAP_ADMIN_PASSWORD:-}" ] && [ -f /root/lldap_admin ]; then
     LLDAP_ADMIN_PASSWORD=$(awk -F': ' '/^Password:/ {print $2; exit}' /root/lldap_admin || true)
@@ -172,7 +173,7 @@ EOF
   (umask 0027 && cat > "$tmp_cfg" <<EOF
 ldap_host = "127.0.0.1"
 ldap_port = ${LLDAP_LDAP_PORT}
-http_host = "127.0.0.1"
+http_host = "${LLDAP_HTTP_HOST}"
 http_port = ${LLDAP_HTTP_PORT}
 ldap_base_dn = "dc=mail,dc=local"
 ldap_user_dn = "admin"
@@ -225,6 +226,11 @@ EOF
   LDAP_TLS_CA=""
   LDAP_TLS_REQUIRE_CERT="never"
   echo "[lldap] Derived LDAP variables for local backend (binding as admin)."
+
+  if [ "$LLDAP_HTTP_HOST" != "127.0.0.1" ]; then
+    command -v ufw >/dev/null 2>&1 && ufw allow "${LLDAP_HTTP_PORT}/tcp" 2>/dev/null || true
+    echo "[lldap] Web UI exposed on ${LLDAP_HTTP_HOST}:${LLDAP_HTTP_PORT}."
+  fi
 }
 
 configure_external() {
