@@ -29,6 +29,11 @@ if ! [[ "$START_STEP" =~ ^[0-6]$ ]]; then
   exit 2
 fi
 
+if [ "$EUID" -ne 0 ]; then
+  echo "This script must be run as root." >&2
+  exit 1
+fi
+
 trap 'echo "ERROR: Script aborted at step ${CURRENT_STEP}. You can resume with: ./mail-server.sh --start-step ${CURRENT_STEP}"' ERR
 
 # === Helpers ===
@@ -98,11 +103,6 @@ fi
 step0() {
   CURRENT_STEP=0
   echo "[0/6] System preparation (update, purge, cleanup)..."
-
-  if [ "$EUID" -ne 0 ]; then
-    echo "This script must be run as root."
-    exit 1
-  fi
 
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -y
@@ -341,6 +341,9 @@ tls_ca_cert_file = $LDAP_TLS_CA
 tls_require_cert = $tls_req
 EOF
 )
+  if [ -n "${LDAP_QUOTA_ATTR:-}" ]; then
+    printf 'user_attrs = %s=quota_rule\n' "$LDAP_QUOTA_ATTR" >> "$tmp"
+  fi
   chown root:dovecot "$tmp"
   mv "$tmp" /etc/dovecot/dovecot-ldap.conf.ext
 

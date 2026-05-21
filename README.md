@@ -308,7 +308,7 @@ LDAP_TLS_REQUIRE_CERT=demand
 | Local delivery      | Dovecot LDA              | Dovecot LMTP (`private/dovecot-lmtp`)                     |
 | Sieve filters       | one global `default.sieve` | per-user under `~/sieve/`, global as fallback           |
 | ManageSieve         | not enabled              | enabled on port 4190 (UFW opened automatically)           |
-| Quota               | none                     | `1G` default per box (overridable via `LDAP_QUOTA_DEFAULT`) |
+| Quota               | none                     | `1G` default (`LDAP_QUOTA_DEFAULT`); per-user override via LDAP attribute (`LDAP_QUOTA_ATTR`) |
 | Sender login map    | PCRE `user@domain → user`| LDAP query on `mail` attribute                             |
 | Packages added      | —                        | `dovecot-ldap`, `dovecot-lmtpd`, `dovecot-managesieved`, `postfix-ldap` |
 

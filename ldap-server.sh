@@ -26,6 +26,11 @@ if ! [[ "$START_STEP" =~ ^[0-3]$ ]]; then
   exit 2
 fi
 
+if [ "$EUID" -ne 0 ]; then
+  echo "This script must be run as root." >&2
+  exit 1
+fi
+
 trap 'echo "ERROR: Script aborted at step ${CURRENT_STEP}. You can resume with: ./ldap-server.sh --start-step ${CURRENT_STEP}"' ERR
 
 # === Environment ===
@@ -46,11 +51,6 @@ SHARED_CONF="$SHARED_CONF_DIR/ldap.conf"
 step0() {
   CURRENT_STEP=0
   echo "[0/3] Validating environment and installing packages..."
-
-  if [ "$EUID" -ne 0 ]; then
-    echo "This script must be run as root." >&2
-    exit 1
-  fi
 
   case "$LDAP_MODE" in
     external|local) ;;
