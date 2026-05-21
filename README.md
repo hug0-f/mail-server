@@ -319,7 +319,7 @@ When `LDAP_MODE=local`:
 - The LLDAP `.deb` is downloaded from the official GitHub release pinned by `LLDAP_VERSION`.
 - The service listens on `127.0.0.1:3890` (plain LDAP) and `127.0.0.1:17170` (web UI). LDAPS is **not** enabled by default (loopback only — no exposure).
 - The admin credentials are written to **`/root/lldap_admin`** (mode 600).
-- After LLDAP starts, `ldap-server.sh` provisions a dedicated **`mail-reader`** service account (member of the built-in `lldap_strict_readonly` group) and uses it as the Dovecot/Postfix bind DN. Credentials in **`/root/lldap_mail_reader`**. The admin account is no longer used for mail authentication queries.
+- Dovecot/Postfix bind as `uid=admin,ou=people,dc=mail,dc=local` (LLDAP's built-in admin). LLDAP does not support group-membership management via the LDAP protocol — only via GraphQL or the web UI — so a least-privilege service account would require GraphQL provisioning. Kept on the to-do list; for now the admin account is the bind identity.
 - To reach the web UI from your workstation, SSH-tunnel it:
   ```bash
   ssh -L 17170:127.0.0.1:17170 youruser@mailserver
@@ -618,7 +618,7 @@ sudo systemctl disable --now lldap 2>/dev/null || true
 sudo rm -f /etc/systemd/system/lldap.service
 sudo rm -f /usr/local/sbin/lldap /usr/local/sbin/lldap_set_password /usr/local/sbin/lldap_migration_tool
 sudo rm -rf /usr/local/share/lldap /etc/lldap /var/lib/lldap /etc/mail-server /var/vmail \
-            /root/lldap_admin /root/lldap_mail_reader /root/ldap-migration
+            /root/lldap_admin /root/ldap-migration
 sudo userdel -r vmail  2>/dev/null || true
 sudo userdel    lldap  2>/dev/null || true
 sudo systemctl daemon-reload
