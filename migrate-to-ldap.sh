@@ -115,13 +115,56 @@ echo "  $PWFILE"
 echo
 case "${LDAP_MODE:-external}" in
   local)
+    admin_dn="uid=admin,ou=people,${LDAP_BASE_DN}"
+    admin_pw=$(awk -F': ' '/^Password:/ {print $2; exit}' /root/lldap_admin 2>/dev/null || true)
+    if [ -z "$admin_pw" ]; then
+      echo "Error: cannot read admin password from /root/lldap_admin." >&2
+      echo "       Import $LDIF and set passwords manually via the LLDAP web UI." >&2
+      exit 1
+    fi
+
+    echo "[migrate] Importing $LDIF via ldapadd..."
+    ldapadd -x -H "$LDAP_URI" -D "$admin_dn" -w "$admin_pw" -f "$LDIF" 2>&1 \
+      | grep -v 'Already exists' || true
+
+    if [ ! -x /usr/local/sbin/lldap_set_password ]; then
+      echo "Warning: /usr/local/sbin/lldap_set_password not found; passwords NOT set." >&2
+      echo "         Set passwords manually via the LLDAP web UI." >&2
+      exit 0
+    fi
+
+    http_port="${LLDAP_HTTP_PORT:-17170}"
+    api_base="http://127.0.0.1:${http_port}"
+
+    echo "[migrate] Obtaining LLDAP admin token..."
+    login_body=$(printf '{"username":"admin","password":"%s"}' "$admin_pw")
+    token=$(curl -fsS -X POST "${api_base}/auth/simple/login" \
+              -H 'Content-Type: application/json' -d "$login_body" \
+            | grep -oE '"token":"[^"]+' | head -1 | sed 's/"token":"//')
+    if [ -z "$token" ]; then
+      echo "Error: failed to obtain admin token from ${api_base}." >&2
+      exit 1
+    fi
+
+    echo "[migrate] Setting OPAQUE passwords for migrated users..."
+    while IFS=$'\t' read -r email pw; do
+      uid="${email%%@*}"
+      if /usr/local/sbin/lldap_set_password \
+           --base-url "$api_base" \
+           --token "$token" \
+           --username "$uid" \
+           --password "$pw" >/dev/null 2>&1; then
+        echo "  $uid: password set"
+      else
+        echo "  $uid: WARNING password set failed" >&2
+      fi
+    done < "$PWFILE"
+
     cat <<EOF
-Next steps (LLDAP local mode):
-  1. Review $LDIF before importing.
-  2. Import using the LLDAP admin (mail-reader is read-only):
-       ldapadd -x -H $LDAP_URI -D uid=admin,ou=people,$LDAP_BASE_DN -W -f $LDIF
-     (Admin password is in /root/lldap_admin. LLDAP will hash userPassword on insert.)
-  3. Distribute the temporary passwords from $PWFILE, then:
+
+Next steps:
+  1. Distribute the temporary passwords from $PWFILE to each user.
+  2. After distribution, securely delete the file:
        shred -u $PWFILE
 EOF
     ;;

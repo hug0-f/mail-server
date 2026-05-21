@@ -561,12 +561,19 @@ This:
 - Discovers users with `~/Mail/` directories (UID 1000–60000).
 - Moves their maildirs to `/var/vmail/<domain>/<user>/Mail/` and chowns `vmail:vmail`.
 - Generates `/root/ldap-migration/users.ldif` and `/root/ldap-migration/passwords.txt` (both mode 600).
-- Prints the import command (`ldapadd` for `external`, UI instructions for `local`).
 
-After importing the LDIF and distributing temporary passwords, shred the file:
+In **`local` mode** the script then automatically:
+- Imports the LDIF via `ldapadd` (binds as LLDAP admin, password read from `/root/lldap_admin`).
+- Sets each user's password via `lldap_set_password` (LLDAP uses the OPAQUE protocol — plain `userPassword` in LDIF is silently ignored, so a follow-up call is required).
+
+In **`external` mode** the script prints the `ldapadd` command for you to run manually after reviewing the LDIF.
+
+After distributing the temporary passwords to your users, shred the file:
 ```bash
 sudo shred -u /root/ldap-migration/passwords.txt
 ```
+
+Users can change their password later via the LLDAP web UI (`http://<ip>:17170` if you set `LLDAP_HTTP_HOST=0.0.0.0`, otherwise through an SSH tunnel).
 
 ---
 
