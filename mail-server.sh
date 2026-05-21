@@ -60,6 +60,7 @@ write_postfix_ldap_cf() {
 
 # === Environment ===
 ENV_FILE="${ENV_FILE:-./mail-server.env}"
+# shellcheck disable=SC1090
 [ -f "$ENV_FILE" ] && . "$ENV_FILE"
 
 domain="$(cat /etc/mailname)"
@@ -161,6 +162,7 @@ step2() {
 
   # Suppress non-blocking PendingDeprecationWarning from python 'cloudflare' 2.20.* (see README §10).
   if [ ! -s "$certdir/fullchain.pem" ] || [ ! -s "$certdir/privkey.pem" ]; then
+    # shellcheck disable=SC2086
     PYTHONWARNINGS="${PYTHONWARNINGS:-ignore:PendingDeprecationWarning}" \
     certbot certonly --non-interactive --agree-tos \
       --cert-name "${cert_primary}" \
@@ -183,6 +185,7 @@ EOF
 }
 
 # === Step 3: Postfix ===
+# shellcheck disable=SC2016  # $myhostname/$mydomain/$mynetworks are Postfix variables, not shell
 step3() {
   CURRENT_STEP=3
   echo "[3/6] Configuring Postfix (LDAP=$LDAP_ENABLED)..."
