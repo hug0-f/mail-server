@@ -328,24 +328,11 @@ EOF
 dovecot_ldap_conf() {
   local tls_req=no
   case "${LDAP_TLS_REQUIRE_CERT:-}" in demand|hard) tls_req=hard ;; esac
-  local tmp=/etc/dovecot/dovecot-ldap.conf.ext.tmp
-  (umask 0027 && cat > "$tmp" <<EOF
-uris = $LDAP_URI
-auth_bind = yes
-dn = $LDAP_BIND_DN
-dnpass = $LDAP_BIND_PW
-base = $LDAP_BASE_DN
-user_filter = $LDAP_USER_FILTER
-pass_filter = $LDAP_USER_FILTER
-tls_ca_cert_file = $LDAP_TLS_CA
-tls_require_cert = $tls_req
-EOF
-)
+  rm -f /etc/dovecot/dovecot-ldap.conf.ext
+  local userdb_quota_line=""
   if [ -n "${LDAP_QUOTA_ATTR:-}" ]; then
-    printf 'user_attrs = %s=quota_rule\n' "$LDAP_QUOTA_ATTR" >> "$tmp"
+    userdb_quota_line="  ldap_iterate_attrs = ${LDAP_QUOTA_ATTR}=quota_rule"
   fi
-  chown root:dovecot "$tmp"
-  mv "$tmp" /etc/dovecot/dovecot-ldap.conf.ext
 
   cat > /etc/dovecot/dovecot.conf <<EOF
 dovecot_config_version = 2.4.1
@@ -363,12 +350,25 @@ auth_allow_cleartext = no
 protocols = imap pop3 lmtp sieve
 
 passdb ldap {
-  driver = ldap
-  args = /etc/dovecot/dovecot-ldap.conf.ext
+  ldap_uris = $LDAP_URI
+  ldap_base = $LDAP_BASE_DN
+  ldap_dn = $LDAP_BIND_DN
+  ldap_dnpass = $LDAP_BIND_PW
+  ldap_auth_bind = yes
+  ldap_user_filter = $LDAP_USER_FILTER
+  ldap_pass_filter = $LDAP_USER_FILTER
+  ldap_tls_ca_cert_file = $LDAP_TLS_CA
+  ldap_tls_require_cert = $tls_req
 }
 userdb ldap {
-  driver = ldap
-  args = /etc/dovecot/dovecot-ldap.conf.ext
+  ldap_uris = $LDAP_URI
+  ldap_base = $LDAP_BASE_DN
+  ldap_dn = $LDAP_BIND_DN
+  ldap_dnpass = $LDAP_BIND_PW
+  ldap_user_filter = $LDAP_USER_FILTER
+  ldap_tls_ca_cert_file = $LDAP_TLS_CA
+  ldap_tls_require_cert = $tls_req
+$userdb_quota_line
 }
 
 mail_driver = maildir
