@@ -37,6 +37,27 @@ enable_now_if_exists() { if has_unit "$1"; then systemctl enable --now "$1"; els
 restart_if_exists() { systemctl restart "$1" 2>/dev/null || true; }
 ufw_allow() { command -v ufw >/dev/null 2>&1 && ufw allow "$1" 2>/dev/null || true; }
 
+write_postfix_ldap_cf() {
+  local out="$1" filter="$2" attr="$3"
+  local tls_req=no
+  case "${LDAP_TLS_REQUIRE_CERT:-}" in demand|hard) tls_req=yes ;; esac
+  local tmp="$out.tmp"
+  (umask 0027 && {
+    printf 'server_host = %s\n'      "$LDAP_URI"
+    printf 'version = 3\n'
+    printf 'search_base = %s\n'      "$LDAP_BASE_DN"
+    printf 'query_filter = %s\n'     "$filter"
+    printf 'result_attribute = %s\n' "$attr"
+    printf 'bind = yes\n'
+    printf 'bind_dn = %s\n'          "$LDAP_BIND_DN"
+    printf 'bind_pw = %s\n'          "$LDAP_BIND_PW"
+    printf 'tls_ca_cert_file = %s\n' "$LDAP_TLS_CA"
+    printf 'tls_require_cert = %s\n' "$tls_req"
+  } > "$tmp")
+  chown root:postfix "$tmp"
+  mv "$tmp" "$out"
+}
+
 # === Environment ===
 ENV_FILE="${ENV_FILE:-./mail-server.env}"
 [ -f "$ENV_FILE" ] && . "$ENV_FILE"
@@ -57,9 +78,20 @@ certbot_email="${CERTBOT_EMAIL:-}"
 trusted_nets="${TRUSTED_NETS:-}"
 dns_out="${DNS_OUTPUT_FILE:-/root/dns_mail}"
 
+# === LDAP integration (loaded from ldap-server.sh output if present) ===
+LDAP_SHARED_CONF="/etc/mail-server/ldap.conf"
+LDAP_ENABLED=0
+if [ -f "$LDAP_SHARED_CONF" ]; then
+  # shellcheck disable=SC1090
+  . "$LDAP_SHARED_CONF"
+fi
+
 install_packages="postfix postfix-pcre dovecot-imapd dovecot-pop3d dovecot-sieve \
 opendkim opendkim-tools spamassassin spamc spamd fail2ban bind9-host ufw \
 certbot python3-certbot-dns-cloudflare"
+if [ "$LDAP_ENABLED" = "1" ]; then
+  install_packages="$install_packages dovecot-ldap dovecot-lmtpd dovecot-managesieved postfix-ldap"
+fi
 
 # === Step 0: system preparation ===
 step0() {
@@ -153,12 +185,17 @@ EOF
 # === Step 3: Postfix ===
 step3() {
   CURRENT_STEP=3
-  echo "[3/6] Configuring Postfix..."
+  echo "[3/6] Configuring Postfix (LDAP=$LDAP_ENABLED)..."
 
   postconf -e "myhostname = $maildomain"
   postconf -e "mail_name = $domain"
   postconf -e "mydomain = $domain"
-  postconf -e 'mydestination = $myhostname, $mydomain, mail, localhost.localdomain, localhost, localhost.$mydomain'
+
+  if [ "$LDAP_ENABLED" = "1" ]; then
+    postconf -e 'mydestination = $myhostname, localhost.localdomain, localhost'
+  else
+    postconf -e 'mydestination = $myhostname, $mydomain, mail, localhost.localdomain, localhost, localhost.$mydomain'
+  fi
 
   postconf -e "smtpd_tls_cert_file = $certdir/fullchain.pem"
   postconf -e "smtpd_tls_key_file  = $certdir/privkey.pem"
@@ -172,20 +209,35 @@ step3() {
   postconf -e 'smtpd_sasl_security_options = noanonymous, noplaintext'
   postconf -e 'smtpd_sasl_tls_security_options = noanonymous'
 
-  postconf -e "smtpd_sender_login_maps = pcre:/etc/postfix/login_maps.pcre"
+  local sender_login_map_ref
+  if [ "$LDAP_ENABLED" = "1" ]; then
+    write_postfix_ldap_cf /etc/postfix/ldap-sender-login.cf    "$LDAP_USER_FILTER" "$LDAP_USER_ATTR"
+    write_postfix_ldap_cf /etc/postfix/ldap-virtual-mailbox.cf "$LDAP_USER_FILTER" "$LDAP_USER_ATTR"
+    sender_login_map_ref="ldap:/etc/postfix/ldap-sender-login.cf"
+    postconf -e "smtpd_sender_login_maps = $sender_login_map_ref"
+    postconf -e 'virtual_mailbox_domains = $mydomain'
+    postconf -e "virtual_mailbox_maps = ldap:/etc/postfix/ldap-virtual-mailbox.cf"
+    postconf -e "virtual_mailbox_base = /var/vmail"
+    postconf -e "virtual_uid_maps = static:$LDAP_VMAIL_UID"
+    postconf -e "virtual_gid_maps = static:$LDAP_VMAIL_UID"
+    postconf -e "virtual_transport = lmtp:unix:private/dovecot-lmtp"
+    postconf -X home_mailbox 2>/dev/null || true
+  else
+    sender_login_map_ref="pcre:/etc/postfix/login_maps.pcre"
+    postconf -e "smtpd_sender_login_maps = $sender_login_map_ref"
+    postconf -e 'home_mailbox = Mail/Inbox/'
+    echo "/^(.*)@$(printf '%s' "$domain" | sed 's/\./\\./g')$/   \${1}" > /etc/postfix/login_maps.pcre
+  fi
+
   postconf -e 'smtpd_sender_restrictions = reject_sender_login_mismatch, permit_sasl_authenticated, permit_mynetworks, reject_unknown_reverse_client_hostname, reject_unknown_sender_domain'
   postconf -e 'smtpd_recipient_restrictions = permit_sasl_authenticated, permit_mynetworks, reject_unauth_destination, reject_unknown_recipient_domain'
   postconf -e 'smtpd_relay_restrictions = permit_sasl_authenticated, reject_unauth_destination'
   postconf -e 'smtpd_helo_required = yes'
   postconf -e 'smtpd_helo_restrictions = permit_sasl_authenticated, permit_mynetworks, reject_invalid_helo_hostname, reject_non_fqdn_helo_hostname, reject_unknown_helo_hostname'
 
-  postconf -e 'home_mailbox = Mail/Inbox/'
-
   echo "/^Received:.*/     IGNORE
 /^X-Originating-IP:/    IGNORE" > /etc/postfix/header_checks
   postconf -e "header_checks = regexp:/etc/postfix/header_checks"
-
-  echo "/^(.*)@$(printf '%s' "$domain" | sed 's/\./\\./g')$/   \${1}" > /etc/postfix/login_maps.pcre
 
   awk '
     /^[a-zA-Z]/ {
@@ -193,7 +245,7 @@ step3() {
     }
     !skip { print }
   ' /etc/postfix/master.cf > /etc/postfix/master.cf.new && mv /etc/postfix/master.cf.new /etc/postfix/master.cf
-  cat >>/etc/postfix/master.cf <<'EOF'
+  cat >>/etc/postfix/master.cf <<EOF
 smtp      inet  n       -       y       -       -       smtpd
   -o content_filter=spamassassin
 submission inet n       -       y       -       -       smtpd
@@ -202,7 +254,7 @@ submission inet n       -       y       -       -       smtpd
   -o smtpd_tls_auth_only=yes
   -o smtpd_client_restrictions=permit_sasl_authenticated,reject
   -o smtpd_sender_restrictions=reject_sender_login_mismatch
-  -o smtpd_sender_login_maps=pcre:/etc/postfix/login_maps.pcre
+  -o smtpd_sender_login_maps=$sender_login_map_ref
   -o smtpd_recipient_restrictions=permit_sasl_authenticated,reject_unauth_destination
 smtps     inet  n       -       y       -       -       smtpd
   -o syslog_name=postfix/smtps
@@ -210,7 +262,7 @@ smtps     inet  n       -       y       -       -       smtpd
   -o smtpd_sasl_auth_enable=yes
 
 spamassassin unix -     n       n       -       -       pipe
-  user=debian-spamd argv=/usr/bin/spamc -f -e /usr/sbin/sendmail -oi -f ${sender} ${recipient}
+  user=debian-spamd argv=/usr/bin/spamc -f -e /usr/sbin/sendmail -oi -f \${sender} \${recipient}
 EOF
 
   postconf -e 'smtpd_forbid_bare_newline = normalize'
@@ -218,13 +270,7 @@ EOF
 }
 
 # === Step 4: Dovecot 2.4 ===
-step4() {
-  CURRENT_STEP=4
-  echo "[4/6] Configuring Dovecot 2.4..."
-  if [ -f /etc/dovecot/dovecot.conf ]; then
-    mv /etc/dovecot/dovecot.conf /etc/dovecot/dovecot.conf.bak
-  fi
-
+dovecot_system_conf() {
   cat > /etc/dovecot/dovecot.conf <<EOF
 dovecot_config_version = 2.4.1
 dovecot_storage_version = 2.4.1
@@ -274,6 +320,127 @@ protocol pop3 {
   pop3_no_flag_updates = yes
 }
 EOF
+}
+
+dovecot_ldap_conf() {
+  local tls_req=no
+  case "${LDAP_TLS_REQUIRE_CERT:-}" in demand|hard) tls_req=hard ;; esac
+  local tmp=/etc/dovecot/dovecot-ldap.conf.ext.tmp
+  (umask 0027 && cat > "$tmp" <<EOF
+uris = $LDAP_URI
+auth_bind = yes
+dn = $LDAP_BIND_DN
+dnpass = $LDAP_BIND_PW
+base = $LDAP_BASE_DN
+user_filter = $LDAP_USER_FILTER
+pass_filter = $LDAP_USER_FILTER
+tls_ca_cert_file = $LDAP_TLS_CA
+tls_require_cert = $tls_req
+EOF
+)
+  chown root:dovecot "$tmp"
+  mv "$tmp" /etc/dovecot/dovecot-ldap.conf.ext
+
+  cat > /etc/dovecot/dovecot.conf <<EOF
+dovecot_config_version = 2.4.1
+dovecot_storage_version = 2.4.1
+
+ssl = yes
+ssl_server_cert_file = $certdir/fullchain.pem
+ssl_server_key_file  = $certdir/privkey.pem
+ssl_min_protocol = TLSv1.2
+ssl_server_prefer_ciphers = server
+
+auth_mechanisms = plain login
+auth_allow_cleartext = no
+
+protocols = imap pop3 lmtp sieve
+
+passdb ldap {
+  driver = ldap
+  args = /etc/dovecot/dovecot-ldap.conf.ext
+}
+userdb ldap {
+  driver = ldap
+  args = /etc/dovecot/dovecot-ldap.conf.ext
+}
+
+mail_driver = maildir
+mail_uid = vmail
+mail_gid = vmail
+mail_home = /var/vmail/%{user | domain}/%{user | username}
+mail_path = ~/Mail
+mail_inbox_path = ~/Mail/Inbox
+mailbox_list_layout = fs
+
+namespace inbox {
+  inbox = yes
+  mailbox Drafts  { special_use = \Drafts  ; auto = subscribe }
+  mailbox Junk    { special_use = \Junk    ; auto = subscribe ; autoexpunge = 30d }
+  mailbox Sent    { special_use = \Sent    ; auto = subscribe }
+  mailbox Trash   { special_use = \Trash   ; auto = subscribe }
+  mailbox Archive { special_use = \Archive ; auto = create    }
+}
+
+mail_plugins = \$mail_plugins quota
+
+plugin {
+  quota = count:User quota
+  quota_status_success = DUNNO
+  quota_status_nouser = DUNNO
+  quota_status_overquota = "552 5.2.2 Mailbox full"
+  quota_grace = 10%%
+  quota_rule = *:storage=$LDAP_QUOTA_DEFAULT
+
+  sieve = file:~/sieve;active=~/.dovecot.sieve
+  sieve_default = /var/lib/dovecot/sieve/default.sieve
+  sieve_default_name = default
+}
+
+service auth {
+  unix_listener /var/spool/postfix/private/auth {
+    mode = 0660
+    user = postfix
+    group = postfix
+  }
+}
+
+service lmtp {
+  unix_listener /var/spool/postfix/private/dovecot-lmtp {
+    mode = 0600
+    user = postfix
+    group = postfix
+  }
+}
+
+service managesieve-login {
+  inet_listener sieve {
+    port = 4190
+  }
+}
+
+protocol lmtp { mail_plugins { sieve = yes ; quota = yes } }
+protocol imap { mail_plugins { quota = yes ; imap_quota = yes } }
+
+protocol pop3 {
+  pop3_uidl_format = %{uid | hex(8)}%{uidvalidity | hex(8)}
+  pop3_no_flag_updates = yes
+}
+EOF
+}
+
+step4() {
+  CURRENT_STEP=4
+  echo "[4/6] Configuring Dovecot 2.4 (LDAP=$LDAP_ENABLED)..."
+  if [ -f /etc/dovecot/dovecot.conf ]; then
+    mv /etc/dovecot/dovecot.conf /etc/dovecot/dovecot.conf.bak
+  fi
+
+  if [ "$LDAP_ENABLED" = "1" ]; then
+    dovecot_ldap_conf
+  else
+    dovecot_system_conf
+  fi
 
   mkdir -p /var/lib/dovecot/sieve
   cat >/var/lib/dovecot/sieve/default.sieve <<'EOF'
@@ -321,9 +488,14 @@ EOF
   postconf -e 'milter_protocol = 6'
   postconf -e 'smtpd_milters = inet:localhost:12301'
   postconf -e 'non_smtpd_milters = inet:localhost:12301'
-  postconf -e 'mailbox_command = /usr/lib/dovecot/dovecot-lda'
 
-  for port in 25 465 587 993 110 995; do ufw_allow "$port"; done
+  if [ "$LDAP_ENABLED" = "1" ]; then
+    postconf -X mailbox_command 2>/dev/null || true
+  else
+    postconf -e 'mailbox_command = /usr/lib/dovecot/dovecot-lda'
+  fi
+
+  for port in 25 465 587 993 110 995 4190; do ufw_allow "$port"; done
 
   ipv4=$(host "$domain" | grep -m1 -Eo '([0-9]+\.){3}[0-9]+') || true
   ipv6=$(host "$domain" | awk '/IPv6/{print $NF; exit}') || true
