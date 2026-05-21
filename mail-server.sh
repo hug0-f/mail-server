@@ -361,7 +361,7 @@ dovecot_ldap_conf() {
 
   local quota_field_line=""
   if [ -n "${LDAP_QUOTA_ATTR:-}" ]; then
-    quota_field_line="    quota_rule = %{ldap:${LDAP_QUOTA_ATTR} | default('*:storage=${LDAP_QUOTA_DEFAULT}')}"
+    quota_field_line="    quota_storage_size = %{ldap:${LDAP_QUOTA_ATTR} | default('${LDAP_QUOTA_DEFAULT}')}"
   fi
 
   cat > /etc/dovecot/dovecot.conf <<EOF
@@ -434,14 +434,14 @@ mail_plugins {
   quota = yes
 }
 
+quota_storage_size = $LDAP_QUOTA_DEFAULT
+quota_storage_grace = 10M
 quota_status_success = DUNNO
 quota_status_nouser = DUNNO
 quota_status_overquota = "552 5.2.2 Mailbox full"
-quota_grace = 10%%
-quota_rule = *:storage=$LDAP_QUOTA_DEFAULT
 
-sieve_script_storage = /var/lib/dovecot/sieve
-sieve_before = /var/lib/dovecot/sieve/default.sieve
+quota "User quota" {
+}
 
 service auth {
   unix_listener /var/spool/postfix/private/auth {
