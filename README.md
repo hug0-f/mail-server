@@ -48,6 +48,21 @@ sudo ./mail-server.sh --start-step 6
 sudo ./mail-server.sh 6
 ```
 
+Run non-interactively (CI/automation) and force purge without prompting:
+```bash
+sudo ./mail-server.sh --purge --yes
+```
+
+Available flags:
+
+| Flag              | Effect                                                          |
+|-------------------|-----------------------------------------------------------------|
+| `--start-step N`  | Resume from step N (alias: `-s N`, or pass the integer alone).  |
+| `--purge`         | Force the destructive purge in step 0 without prompting.        |
+| `--yes`, `-y`     | Skip confirmation prompts (purge runs without asking).          |
+
+> By default, step 0 **prompts** before purging the existing mail stack. If you answer "no" (or use neither `--purge` nor `--yes` in a non-interactive run), the purge is skipped and the script proceeds straight to package install.
+
 If the script aborts, it prints which step you can resume from.
 
 ---
@@ -85,7 +100,7 @@ Create the following at your DNS provider (Cloudflare if you follow this guide).
 - **DKIM (TXT)**: Publishes your public DKIM key (generated on your mail server).
 - **DMARC (TXT)**: Defines your DMARC policy for handling failed SPF/DKIM messages.
 
-> After installation, the script writes the exact strings you need to `~/dns_mail`.
+> After installation, the script writes the exact strings you need to `/root/dns_mail` (override with `DNS_OUTPUT_FILE`).
 
 ### Optional DNS records (SRV, TLS-RPT, CAA)
 
@@ -168,17 +183,35 @@ Create this next to `mail-server.sh`:
 # mail.env
 DNS_PROVIDER=cloudflare
 DNS_CREDENTIALS_FILE=/root/.secrets/certbot/cloudflare.ini
-CERTBOT_EMAIL=admin@domain.tld
+CERTBOT_EMAIL=admin@domain.tld          # required
 CERT_DOMAINS="mail.domain.tld"
 DNS_PROPAGATION_SECONDS=180
 
 # Optional overrides:
 # MAIL_SUBDOM=mail
 # MAIL_FQDN=mail.domain.tld
+# TRUSTED_NETS="10.1.0.0/16 192.168.0.0/16"
+# DNS_OUTPUT_FILE=/root/dns_mail
 ```
 
-- `CERT_DOMAINS` can include multiple names (space‑separated).
-- `DNS_PROPAGATION_SECONDS` waits for TXT record propagation before validation.
+### Required variables
+
+- **`DNS_PROVIDER`** — DNS provider used by Certbot for DNS-01 challenge. Only `cloudflare` is wired today.
+- **`DNS_CREDENTIALS_FILE`** — Path to the Certbot DNS plugin credentials (see §3). The script enforces `chmod 600`.
+- **`CERTBOT_EMAIL`** — Email registered with Let's Encrypt for expiration notices. **Step 2 aborts if empty.** Use a real mailbox you read.
+- **`CERT_DOMAINS`** — Space-separated list of hostnames included in the certificate (SAN). The first entry is used as Certbot `--cert-name` and as the canonical mail FQDN unless `MAIL_FQDN` overrides it. Example: `"mail.domain.tld autodiscover.domain.tld"`.
+- **`DNS_PROPAGATION_SECONDS`** — Seconds Certbot waits for the TXT challenge record to propagate before validation. `180` is safe for Cloudflare.
+
+### Optional overrides (commented in `mail.env.example`)
+
+Uncomment only the variables whose defaults you want to change.
+
+- **`MAIL_SUBDOM`** (default `mail`) — Subdomain part of the mail server FQDN **and** the DKIM selector. The DKIM DNS record is published at `${MAIL_SUBDOM}._domainkey.${domain}`. Change it only if you want a non-default selector (e.g. `k1`, `s1`) or a non-`mail` hostname.
+- **`MAIL_FQDN`** (default `${MAIL_SUBDOM}.${domain}`, where `${domain}` is the content of `/etc/mailname`) — Fully-qualified hostname of the mail server. Used for Postfix `myhostname`, TLS banners, and the certificate CN. Override only if your FQDN does not follow the `<subdomain>.<domain>` pattern (rare — e.g. `mx1.eu.domain.tld`).
+- **`TRUSTED_NETS`** (default empty) — Space-separated CIDR list added to OpenDKIM `TrustedHosts` alongside `127.0.0.1`. Hosts in these networks can relay mail through your server **without DKIM signing**. Leave empty unless you want to relay from your LAN. Typical home value: `"192.168.1.0/24"`.
+- **`DNS_OUTPUT_FILE`** (default `/root/dns_mail`) — File where step 5 writes the SPF/DKIM/DMARC/MX records you must publish. Change only if you want the summary elsewhere.
+
+> The package list also includes `ufw`; it is installed automatically if missing so the firewall rules added in step 5 actually take effect.
 
 ---
 
@@ -197,7 +230,7 @@ The script:
 3. Issues or renews a Let’s Encrypt certificate using Cloudflare DNS‑01 and installs a renewal hook that reloads Postfix/Dovecot.
 4. Writes **Dovecot 2.4** config (single file).
 5. Wires **Postfix↔Dovecot SASL**, **OpenDKIM** (milter), **SpamAssassin** filter.
-6. Emits **SPF/DKIM/DMARC/MX** records into `~/dns_mail`.
+6. Emits **SPF/DKIM/DMARC/MX** records into `/root/dns_mail` (configurable via `DNS_OUTPUT_FILE`).
 7. Supports **resuming** from any step with `--start-step N` (0..6).
 
 ---
@@ -277,7 +310,7 @@ The script:
 - Generates a selector (default: `mail`) and keys at `/etc/postfix/dkim/<domain>/`.
 - Populates **KeyTable**, **SigningTable**, **TrustedHosts**.
 - Adds the milter to Postfix (`smtpd_milters`, `non_smtpd_milters`).
-- Writes the publishable DKIM TXT into `~/dns_mail` (copy `p=` into `mail._domainkey.domain.tld`).
+- Writes the publishable DKIM TXT into `/root/dns_mail` (copy the full value into `<selector>._domainkey.domain.tld`).
 
 ---
 

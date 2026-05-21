@@ -2,20 +2,28 @@
 set -Eeuo pipefail
 umask 0022
 
-# ============================================================
-#  Email server installer for Debian 13 / Raspberry Pi (Dovecot 2.4.x)
-#  Postfix + Dovecot + OpenDKIM + SpamAssassin + Fail2ban
-#  Let's Encrypt DNS-01 (Cloudflare)
-# ============================================================
-
-# -------- argument parsing (resume at step N) ----------------
+# === Argument parsing ===
 START_STEP=0
-if [[ "${1:-}" =~ ^[0-9]+$ ]]; then
-  START_STEP="$1"
-elif [[ "${1:-}" == "--start-step" || "${1:-}" == "-s" ]]; then
-  START_STEP="${2:-0}"
-  shift 2 || true
-fi
+PURGE=0
+ASSUME_YES=0
+usage() {
+  cat <<EOF
+Usage: $0 [--start-step N | -s N | N] [--purge] [--yes|-y]
+  --start-step N   Resume from step N (0..6).
+  --purge          Force purge in step 0 without prompting.
+  --yes, -y        Skip confirmation prompts (purges without asking).
+EOF
+}
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --start-step|-s) START_STEP="${2:-0}"; shift 2 ;;
+    --purge)         PURGE=1; shift ;;
+    --yes|-y)        ASSUME_YES=1; shift ;;
+    -h|--help)       usage; exit 0 ;;
+    [0-9]*)          START_STEP="$1"; shift ;;
+    *) echo "Unknown argument: $1" >&2; usage; exit 2 ;;
+  esac
+done
 if ! [[ "$START_STEP" =~ ^[0-6]$ ]]; then
   echo "Invalid start step. Must be an integer 0..6."
   exit 2
@@ -23,15 +31,13 @@ fi
 
 trap 'echo "ERROR: Script aborted at step ${CURRENT_STEP}. You can resume with: ./mail-server.sh --start-step ${CURRENT_STEP}"' ERR
 
-# -------- helpers --------------------------------------------
+# === Helpers ===
 has_unit() { systemctl list-unit-files --type=service --no-pager 2>/dev/null | awk '{print $1}' | grep -qx "$1"; }
 enable_now_if_exists() { if has_unit "$1"; then systemctl enable --now "$1"; else echo "Note: service $1 not found, skipping enable."; fi; }
 restart_if_exists() { systemctl restart "$1" 2>/dev/null || true; }
 ufw_allow() { command -v ufw >/dev/null 2>&1 && ufw allow "$1" 2>/dev/null || true; }
 
-# ============================================================
-# Environment variables
-# ============================================================
+# === Environment ===
 ENV_FILE="${ENV_FILE:-./mail-server.env}"
 [ -f "$ENV_FILE" ] && . "$ENV_FILE"
 
@@ -48,11 +54,14 @@ dns_credentials_file="${DNS_CREDENTIALS_FILE:-/root/.secrets/certbot/cloudflare.
 dns_propagation_seconds="${DNS_PROPAGATION_SECONDS:-180}"
 certbot_email="${CERTBOT_EMAIL:-}"
 
+trusted_nets="${TRUSTED_NETS:-}"
+dns_out="${DNS_OUTPUT_FILE:-/root/dns_mail}"
+
 install_packages="postfix postfix-pcre dovecot-imapd dovecot-pop3d dovecot-sieve \
-opendkim opendkim-tools spamassassin spamc spamd fail2ban bind9-host \
+opendkim opendkim-tools spamassassin spamc spamd fail2ban bind9-host ufw \
 certbot python3-certbot-dns-cloudflare"
 
-# ============================================================
+# === Step 0: system preparation ===
 step0() {
   CURRENT_STEP=0
   echo "[0/6] System preparation (update, purge, cleanup)..."
@@ -67,6 +76,15 @@ step0() {
   apt-get full-upgrade -y
   apt-get autoremove -y
   apt-get autoclean -y
+
+  if [ "$PURGE" -ne 1 ] && [ "$ASSUME_YES" -ne 1 ]; then
+    echo "Step 0 will PURGE postfix/dovecot/opendkim/spamassassin/fail2ban/certbot and wipe their config directories."
+    read -rp "Proceed with purge? [y/N] " ans
+    case "$ans" in
+      y|Y|yes|YES) ;;
+      *) echo "Skipping purge (use --purge or --yes to skip this prompt)."; arch=$(uname -m); echo "Architecture: ${arch}"; return ;;
+    esac
+  fi
 
   echo "Stopping any running mail-related services..."
   systemctl stop postfix dovecot opendkim spamassassin spamd fail2ban 2>/dev/null || true
@@ -84,16 +102,17 @@ step0() {
   echo "Architecture: ${arch}"
 }
 
-# ============================================================
+# === Step 1: install packages ===
 step1() {
   CURRENT_STEP=1
   echo "[1/6] Installing required packages..."
   apt-get update -y
   systemctl -q stop dovecot postfix || true
+  # shellcheck disable=SC2086
   apt-get install -y $install_packages
 }
 
-# ============================================================
+# === Step 2: Let's Encrypt certificate (DNS-01) ===
 step2() {
   CURRENT_STEP=2
   echo "[2/6] Issuing/renewing Let's Encrypt certificate (DNS-${dns_provider})..."
@@ -103,21 +122,19 @@ step2() {
   [ -f "$dns_credentials_file" ] || { echo "Error: Cloudflare credentials file not found: $dns_credentials_file" >&2; exit 1; }
   chmod 600 "$dns_credentials_file"
 
-  local email_flag="--register-unsafely-without-email"
-  [ -n "$certbot_email" ] && email_flag="--email $certbot_email"
+  [ -n "$certbot_email" ] || { echo "Error: CERTBOT_EMAIL is required in $ENV_FILE (used by Let's Encrypt for expiration notices)." >&2; exit 1; }
 
   local domain_flags=""
   for d in $cert_domains; do domain_flags="$domain_flags -d $d"; done
 
-  # Suppress PendingDeprecationWarning banner from python 'cloudflare' 2.20.* (safe to ignore)
-  # See README for details.
+  # Suppress non-blocking PendingDeprecationWarning from python 'cloudflare' 2.20.* (see README §10).
   if [ ! -s "$certdir/fullchain.pem" ] || [ ! -s "$certdir/privkey.pem" ]; then
     PYTHONWARNINGS="${PYTHONWARNINGS:-ignore:PendingDeprecationWarning}" \
     certbot certonly --non-interactive --agree-tos \
       --cert-name "${cert_primary}" \
       --dns-cloudflare --dns-cloudflare-credentials "$dns_credentials_file" \
       --dns-cloudflare-propagation-seconds "$dns_propagation_seconds" \
-      $email_flag $domain_flags
+      --email "$certbot_email" $domain_flags
   fi
 
   mkdir -p /etc/letsencrypt/renewal-hooks/deploy
@@ -133,7 +150,7 @@ EOF
   [ -s "$certdir/privkey.pem" ]   || { echo "Private key missing: $certdir/privkey.pem"; exit 1; }
 }
 
-# ============================================================
+# === Step 3: Postfix ===
 step3() {
   CURRENT_STEP=3
   echo "[3/6] Configuring Postfix..."
@@ -170,7 +187,12 @@ step3() {
 
   echo "/^(.*)@$(printf '%s' "$domain" | sed 's/\./\\./g')$/   \${1}" > /etc/postfix/login_maps.pcre
 
-  sed -i '/^\s*-o/d;/^\s*submission/d;/^\s*smtp\s\+inet/d;/^\s*smtps/d' /etc/postfix/master.cf
+  awk '
+    /^[a-zA-Z]/ {
+      skip = ($1 == "smtp" || $1 == "smtps" || $1 == "submission" || $1 == "spamassassin") ? 1 : 0
+    }
+    !skip { print }
+  ' /etc/postfix/master.cf > /etc/postfix/master.cf.new && mv /etc/postfix/master.cf.new /etc/postfix/master.cf
   cat >>/etc/postfix/master.cf <<'EOF'
 smtp      inet  n       -       y       -       -       smtpd
   -o content_filter=spamassassin
@@ -195,11 +217,13 @@ EOF
   postconf -e 'smtpd_forbid_bare_newline_exclusions = $mynetworks'
 }
 
-# ============================================================
+# === Step 4: Dovecot 2.4 ===
 step4() {
   CURRENT_STEP=4
   echo "[4/6] Configuring Dovecot 2.4..."
-  [ -f /etc/dovecot/dovecot.conf ] && mv /etc/dovecot/dovecot.conf /etc/dovecot/dovecot.conf.bak || true
+  if [ -f /etc/dovecot/dovecot.conf ]; then
+    mv /etc/dovecot/dovecot.conf /etc/dovecot/dovecot.conf.bak
+  fi
 
   cat > /etc/dovecot/dovecot.conf <<EOF
 dovecot_config_version = 2.4.1
@@ -215,13 +239,11 @@ auth_mechanisms = plain login
 auth_allow_cleartext = no
 auth_username_format = %{user | username}
 
-# Protocols (canonical form)
 protocols = imap pop3
 
 userdb system { driver = passwd }
 passdb default { driver = pam }
 
-# Mail storage (2.4-style)
 mail_driver = maildir
 mail_path = %{home}/Mail
 mail_inbox_path = %{home}/Mail/Inbox
@@ -264,7 +286,7 @@ EOF
   sievec /var/lib/dovecot/sieve/default.sieve || true
 }
 
-# ============================================================
+# === Step 5: OpenDKIM and DNS records ===
 step5() {
   CURRENT_STEP=5
   echo "[5/6] Configuring OpenDKIM and generating DNS records..."
@@ -280,8 +302,12 @@ step5() {
     echo "$subdom._domainkey.$domain $domain:$subdom:/etc/postfix/dkim/$domain/$subdom.private" >> /etc/postfix/dkim/keytable
   grep -q "$domain" /etc/postfix/dkim/signingtable 2>/dev/null || \
     echo "*@$domain $subdom._domainkey.$domain" >> /etc/postfix/dkim/signingtable
-  grep -q '127.0.0.1' /etc/postfix/dkim/trustedhosts 2>/dev/null || \
-    { echo -e "127.0.0.1\n10.1.0.0/16" >> /etc/postfix/dkim/trustedhosts; }
+  if [ ! -f /etc/postfix/dkim/trustedhosts ] || ! grep -q '127.0.0.1' /etc/postfix/dkim/trustedhosts; then
+    {
+      echo "127.0.0.1"
+      for net in $trusted_nets; do echo "$net"; done
+    } >> /etc/postfix/dkim/trustedhosts
+  fi
 
   grep -q '^KeyTable' /etc/opendkim.conf 2>/dev/null || cat >>/etc/opendkim.conf <<'EOF'
 KeyTable           file:/etc/postfix/dkim/keytable
@@ -299,21 +325,23 @@ EOF
 
   for port in 25 465 587 993 110 995; do ufw_allow "$port"; done
 
-  # Output DNS records
   ipv4=$(host "$domain" | grep -m1 -Eo '([0-9]+\.){3}[0-9]+') || true
   ipv6=$(host "$domain" | awk '/IPv6/{print $NF; exit}') || true
-  pval="$(tr -d '\n' <"/etc/postfix/dkim/$domain/$subdom.txt" | sed "s/k=rsa.* \"p=/k=rsa; p=/;s/\"[[:space:]]*\"//g;s/\"[[:space:]]*)//" | grep -o 'p=.*')"
 
-  dkim="mail._domainkey.$domain	TXT	v=DKIM1; k=rsa; $pval"
+  # Concatenate all double-quoted segments from opendkim-genkey output to get the full TXT value.
+  dkim_value=$(awk -F'"' '{for(i=2;i<=NF;i+=2) printf "%s", $i}' "/etc/postfix/dkim/$domain/$subdom.txt")
+
+  dkim="$subdom._domainkey.$domain	TXT	$dkim_value"
   dmarc="_dmarc.$domain	        TXT	v=DMARC1; p=reject; rua=mailto:postmaster@$domain; fo=1"
   spf="$domain	                TXT	v=spf1 mx a:$maildomain ${ipv4:+ip4:$ipv4} ${ipv6:+ip6:$ipv6} -all"
   mx="$domain	                MX	10	$maildomain	300"
 
   printf "NOTE: Add the following DNS records (order may vary):\n%s\n%s\n%s\n%s\n" \
-    "$dkim" "$dmarc" "$spf" "$mx" > "$HOME/dns_mail"
+    "$dkim" "$dmarc" "$spf" "$mx" > "$dns_out"
+  echo "DNS records written to $dns_out"
 }
 
-# ============================================================
+# === Step 6: services and Fail2ban ===
 step6() {
   CURRENT_STEP=6
   echo "[6/6] Enabling services and Fail2ban..."
@@ -332,10 +360,8 @@ EOF
 
   systemctl daemon-reload
 
-  # OpenDKIM can appear as SysV wrapped by systemd; enabling is safe.
   enable_now_if_exists opendkim.service
 
-  # SpamAssassin: prefer spamd.service on Debian 12/13; fallback to spamassassin.service
   if has_unit spamd.service; then
     enable_now_if_exists spamd.service
   else
@@ -358,10 +384,8 @@ Quick checks:
 "
 }
 
-# ============================================================
-# Run selected steps
+# === Run selected steps ===
 for n in 0 1 2 3 4 5 6; do
   [ "$n" -lt "$START_STEP" ] && continue
   "step${n}"
 done
-
