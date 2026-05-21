@@ -326,12 +326,18 @@ EOF
 }
 
 dovecot_ldap_conf() {
-  local tls_req=no
-  case "${LDAP_TLS_REQUIRE_CERT:-}" in demand|hard) tls_req=hard ;; esac
   rm -f /etc/dovecot/dovecot-ldap.conf.ext
-  local userdb_quota_line=""
+
+  local user_filter="${LDAP_USER_FILTER//%u/%\{user\}}"
+
+  local ssl_client_block=""
+  case "$LDAP_URI" in
+    ldaps://*) ssl_client_block="ssl_client_ca_file = $LDAP_TLS_CA" ;;
+  esac
+
+  local quota_field_line=""
   if [ -n "${LDAP_QUOTA_ATTR:-}" ]; then
-    userdb_quota_line="  ldap_iterate_attrs = ${LDAP_QUOTA_ATTR}=quota_rule"
+    quota_field_line="    quota_rule = %{ldap:${LDAP_QUOTA_ATTR} | default('*:storage=${LDAP_QUOTA_DEFAULT}')}"
   fi
 
   cat > /etc/dovecot/dovecot.conf <<EOF
@@ -343,32 +349,28 @@ ssl_server_cert_file = $certdir/fullchain.pem
 ssl_server_key_file  = $certdir/privkey.pem
 ssl_min_protocol = TLSv1.2
 ssl_server_prefer_ciphers = server
+$ssl_client_block
 
 auth_mechanisms = plain login
 auth_allow_cleartext = no
 
 protocols = imap pop3 lmtp sieve
 
+ldap_uris = $LDAP_URI
+ldap_auth_dn = $LDAP_BIND_DN
+ldap_auth_dn_password = $LDAP_BIND_PW
+ldap_base = $LDAP_BASE_DN
+
 passdb ldap {
-  ldap_uris = $LDAP_URI
-  ldap_base = $LDAP_BASE_DN
-  ldap_dn = $LDAP_BIND_DN
-  ldap_dnpass = $LDAP_BIND_PW
-  ldap_auth_bind = yes
-  ldap_user_filter = $LDAP_USER_FILTER
-  ldap_pass_filter = $LDAP_USER_FILTER
-  ldap_tls_ca_cert_file = $LDAP_TLS_CA
-  ldap_tls_require_cert = $tls_req
+  bind = yes
+  filter = $user_filter
 }
 userdb ldap {
-  ldap_uris = $LDAP_URI
-  ldap_base = $LDAP_BASE_DN
-  ldap_dn = $LDAP_BIND_DN
-  ldap_dnpass = $LDAP_BIND_PW
-  ldap_user_filter = $LDAP_USER_FILTER
-  ldap_tls_ca_cert_file = $LDAP_TLS_CA
-  ldap_tls_require_cert = $tls_req
-$userdb_quota_line
+  filter = $user_filter
+  fields {
+    user = %{ldap:$LDAP_USER_ATTR}
+$quota_field_line
+  }
 }
 
 mail_driver = maildir
