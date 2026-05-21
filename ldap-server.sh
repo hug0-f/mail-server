@@ -60,7 +60,7 @@ step0() {
 
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -y
-  apt-get install -y ldap-utils ca-certificates
+  apt-get install -y ldap-utils ca-certificates curl openssl
 }
 
 # === Step 1: mode dispatch ===
@@ -70,8 +70,116 @@ step1() {
 
   case "$LDAP_MODE" in
     external) configure_external ;;
-    local)    echo "Error: LDAP_MODE=local is not yet implemented." >&2; exit 1 ;;
+    local)    install_lldap ;;
   esac
+}
+
+install_lldap() {
+  : "${LLDAP_VERSION:=v0.6.1}"
+  : "${LLDAP_HTTP_PORT:=17170}"
+  : "${LLDAP_LDAP_PORT:=3890}"
+  : "${LLDAP_LDAPS_PORT:=6360}"
+
+  if [ -z "${LLDAP_ADMIN_PASSWORD:-}" ] && [ -f /root/lldap_admin ]; then
+    LLDAP_ADMIN_PASSWORD=$(awk -F': ' '/^Password:/ {print $2; exit}' /root/lldap_admin || true)
+    [ -n "${LLDAP_ADMIN_PASSWORD:-}" ] && echo "[lldap] Reusing existing admin password from /root/lldap_admin."
+  fi
+  if [ -z "${LLDAP_ADMIN_PASSWORD:-}" ]; then
+    LLDAP_ADMIN_PASSWORD=$(openssl rand -hex 16)
+    echo "[lldap] Generated new admin password."
+  fi
+
+  local arch deb_arch deb_file deb_url version_num
+  arch=$(uname -m)
+  case "$arch" in
+    x86_64)         deb_arch=amd64 ;;
+    aarch64)        deb_arch=arm64 ;;
+    armv7l|armv6l)  deb_arch=armhf ;;
+    *) echo "Error: unsupported arch '$arch' for LLDAP." >&2; exit 1 ;;
+  esac
+  version_num="${LLDAP_VERSION#v}"
+  deb_file="lldap_${version_num}-1_${deb_arch}.deb"
+  deb_url="https://github.com/lldap/lldap/releases/download/${LLDAP_VERSION}/${deb_file}"
+
+  if ! dpkg -s lldap >/dev/null 2>&1; then
+    echo "[lldap] Downloading $deb_url..."
+    local tmp
+    tmp=$(mktemp -d)
+    if ! curl -fsSL -o "$tmp/$deb_file" "$deb_url"; then
+      echo "Error: failed to download $deb_url" >&2
+      echo "       Verify LLDAP_VERSION and asset name at https://github.com/lldap/lldap/releases" >&2
+      rm -rf "$tmp"
+      exit 1
+    fi
+    [ -s "$tmp/$deb_file" ] || { echo "Error: downloaded file is empty." >&2; rm -rf "$tmp"; exit 1; }
+    apt-get install -y "$tmp/$deb_file"
+    rm -rf "$tmp"
+  else
+    echo "[lldap] Package already installed."
+  fi
+
+  mkdir -p /etc/lldap
+  local jwt_secret=""
+  if [ -f /etc/lldap/lldap_config.toml ]; then
+    jwt_secret=$(awk -F'"' '/^jwt_secret/ {print $2; exit}' /etc/lldap/lldap_config.toml || true)
+  fi
+  [ -n "$jwt_secret" ] || jwt_secret=$(openssl rand -hex 32)
+
+  local tmp_cfg=/etc/lldap/lldap_config.toml.tmp
+  (umask 0027 && cat > "$tmp_cfg" <<EOF
+ldap_host = "127.0.0.1"
+ldap_port = ${LLDAP_LDAP_PORT}
+http_host = "127.0.0.1"
+http_port = ${LLDAP_HTTP_PORT}
+ldap_base_dn = "dc=mail,dc=local"
+ldap_user_dn = "admin"
+ldap_user_email = "admin@mail.local"
+ldap_user_pass = "${LLDAP_ADMIN_PASSWORD}"
+jwt_secret = "${jwt_secret}"
+EOF
+)
+  chown root:lldap "$tmp_cfg" 2>/dev/null || true
+  mv "$tmp_cfg" /etc/lldap/lldap_config.toml
+
+  (umask 0077 && cat > /root/lldap_admin <<EOF
+LLDAP admin credentials
+=======================
+URL:      http://127.0.0.1:${LLDAP_HTTP_PORT}
+Username: admin
+Password: ${LLDAP_ADMIN_PASSWORD}
+EOF
+)
+  echo "[lldap] Admin credentials stored in /root/lldap_admin (mode 600)."
+
+  systemctl daemon-reload
+  systemctl enable lldap >/dev/null 2>&1 || true
+  systemctl restart lldap
+
+  echo "[lldap] Waiting for LLDAP to become ready..."
+  local i
+  for i in $(seq 1 15); do
+    if ldapsearch -x -H "ldap://127.0.0.1:${LLDAP_LDAP_PORT}" \
+         -D "uid=admin,ou=people,dc=mail,dc=local" -w "$LLDAP_ADMIN_PASSWORD" \
+         -b "dc=mail,dc=local" -s base >/dev/null 2>&1; then
+      echo "[lldap] Ready."
+      break
+    fi
+    sleep 2
+    if [ "$i" -eq 15 ]; then
+      echo "Error: LLDAP did not become ready in time. Check 'journalctl -u lldap'." >&2
+      exit 1
+    fi
+  done
+
+  LDAP_URI="ldap://127.0.0.1:${LLDAP_LDAP_PORT}"
+  LDAP_BASE_DN="dc=mail,dc=local"
+  LDAP_BIND_DN="uid=admin,ou=people,dc=mail,dc=local"
+  LDAP_BIND_PW="$LLDAP_ADMIN_PASSWORD"
+  LDAP_USER_FILTER='(&(objectClass=person)(mail=%u))'
+  LDAP_USER_ATTR="mail"
+  LDAP_TLS_CA=""
+  LDAP_TLS_REQUIRE_CERT="never"
+  echo "[lldap] Derived LDAP variables for local backend."
 }
 
 configure_external() {
