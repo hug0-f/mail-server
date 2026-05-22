@@ -652,8 +652,28 @@ Ensure the `mail` host is **DNS only** (not proxied).
 **Cloudflare 2.20 warning during Certbot** 
 It’s informational; issuance still works. Options: ignore, pin 2.19.*, or adopt the 3.x SDK later.
 
-**SpamAssassin service errors** 
+**SpamAssassin service errors**
 On Debian 13, prefer `spamd.service` (package `spamd`). If it’s missing, install it; otherwise fall back to `spamassassin.service`.
+
+**`postconf: warning: /etc/postfix/main.cf, line X: overriding earlier entry`**
+Two lines declare the same parameter. Postfix uses the last one and runs fine, but the warning persists. Common cause: following §16's manual relay setup *and* later setting `RELAYHOST` in `mail.env` — both paths wrote `smtp_tls_security_level`, the second got appended instead of replaced. Fix:
+```bash
+sudo grep -n smtp_tls_security_level /etc/postfix/main.cf   # find the duplicates
+sudo sed -i '/^smtp_tls_security_level = may$/d' /etc/postfix/main.cf  # keep only "encrypt"
+sudo systemctl reload postfix
+```
+Same recipe for any other parameter — keep the value you want, delete the other. Always use `postconf -e '<param> = <value>'` instead of hand-editing to avoid this in the future.
+
+**Outgoing mail stuck in queue / no delivery after install**
+The pre-2026-05 versions of `mail-server.sh` had an `awk` filter that accidentally stripped the `smtp unix - - y - - smtp` client entry from `/etc/postfix/master.cf` along with the rebuilt `smtp inet` server entry. Symptom: Postfix accepts mail on submission but never relays it. Fix:
+```bash
+grep -E '^smtp\s+(inet|unix)' /etc/postfix/master.cf
+# Should show TWO lines (smtp inet + smtp unix). If smtp unix is missing:
+sudo bash -c 'echo "smtp      unix  -       -       y       -       -       smtp" >> /etc/postfix/master.cf'
+sudo systemctl restart postfix
+sudo postqueue -f
+```
+Already fixed in current `mail-server.sh`; re-running `step3` regenerates a correct `master.cf`.
 
 ---
 
@@ -715,8 +735,10 @@ sudo systemctl daemon-reload
 ```
 ## 16) SMTP Relay Configuration Guide (Postfix / Dovecot)
 
+> **Recommended path:** set the `RELAYHOST` family of env vars in `mail.env` (see [§4a — SMTP relay overrides](#smtp-relay-smart-host-overrides)) and re-run `mail-server.sh` / `install.sh`. The script writes `relayhost`, the SASL settings and `/etc/postfix/sasl_passwd` (mode 600) for you, and the toggle is idempotent — removing `RELAYHOST` from the env cleanly tears the configuration down. The manual procedure below documents what is happening under the hood and the SPF/DMARC implications you must handle yourself.
+
 ### 1. Overview
-By default, Postfix tries to deliver mail directly to recipients' mail servers (via their MX records).  
+By default, Postfix tries to deliver mail directly to recipients' mail servers (via their MX records).
 If your IP is on a residential connection, these direct deliveries are usually blocked or marked as spam.
 
 Using a **relay (smart host)** means Postfix sends all outgoing mail through another SMTP server that already has a good reputation.
@@ -729,7 +751,9 @@ Your Postfix → [Authenticated SMTP Relay] → Internet → Recipient MX
 
 ---
 
-### 2. Postfix Configuration
+### 2. Postfix Configuration (manual / fallback)
+
+> Skip this section if you used `RELAYHOST` in `mail.env` — the script already applied all of it. Use this only when you need a setup the env vars can't express (multiple relayhosts, per-sender routing, etc.).
 
 Edit `/etc/postfix/main.cf` and add the following lines near the end of the file:
 
@@ -745,6 +769,8 @@ smtp_sasl_mechanism_filter = plain, login
 smtp_tls_security_level = encrypt
 ```
 
+> If `smtp_tls_security_level` already exists in `main.cf` (the script writes it as `may` by default), **replace** it rather than appending — otherwise Postfix logs `warning: overriding earlier entry`. Use `postconf -e 'smtp_tls_security_level = encrypt'` instead of editing the file by hand.
+
 #### 2.1 Credentials file
 
 Create the file `/etc/postfix/sasl_passwd` with your relay’s credentials:
@@ -753,9 +779,9 @@ Create the file `/etc/postfix/sasl_passwd` with your relay’s credentials:
 [smtp.relay.domain.com]:587    username:password
 ```
 
-> **Important:**  
-> - Do **not** use quotes around username or password.  
-> - Special characters like `@`, `!`, `#`, `$`, `%` are fine.  
+> **Important:**
+> - Do **not** use quotes around username or password.
+> - Special characters like `@`, `!`, `#`, `$`, `%` are fine.
 > - Only avoid spaces.
 
 Then secure and compile the file:
@@ -815,6 +841,18 @@ v=spf1 mx a:<your-mail-server> include:<relay-provider-SPF-record> -all
 ---
 
 ### 4. Summary
+
+Recommended (env-driven):
+
+| Variable in `mail.env` | What it produces in Postfix                         |
+|------------------------|-----------------------------------------------------|
+| `RELAYHOST`            | `relayhost = [host]:port`                           |
+| `RELAY_PORT`           | Port appended to `relayhost` (default `587`)        |
+| `RELAY_USER`/`RELAY_PASS` | `smtp_sasl_*` block + `/etc/postfix/sasl_passwd` (mode 600, `postmap`-ed) |
+| `RELAY_TLS_LEVEL`      | `smtp_tls_security_level` (default `encrypt`)        |
+| `RELAYHOST` unset      | All of the above is removed on next run             |
+
+Manual fallback (still useful for non-standard setups):
 
 | Purpose           | File                               | Setting                            |
 |-------------------|------------------------------------|------------------------------------|
