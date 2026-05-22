@@ -112,6 +112,7 @@ step0() {
 
   if [ "$PURGE" -ne 1 ] && [ "$ASSUME_YES" -ne 1 ]; then
     echo "Step 0 will PURGE postfix/dovecot/opendkim/spamassassin/fail2ban/certbot and wipe their config directories."
+    echo "It also removes LLDAP (binaries, /etc/lldap, /var/lib/lldap), /var/vmail, the vmail/lldap system users, and migration artifacts."
     read -rp "Proceed with purge? [y/N] " ans
     case "$ans" in
       y|Y|yes|YES) ;;
@@ -120,7 +121,7 @@ step0() {
   fi
 
   echo "Stopping any running mail-related services..."
-  systemctl stop postfix dovecot opendkim spamassassin spamd fail2ban 2>/dev/null || true
+  systemctl stop postfix dovecot opendkim spamassassin spamd fail2ban lldap 2>/dev/null || true
 
   echo "Purging previous mail stack (if any)..."
   apt-get purge -y --auto-remove postfix dovecot-core dovecot-imapd dovecot-pop3d dovecot-sieve \
@@ -129,7 +130,15 @@ step0() {
 
   echo "Cleaning legacy configuration directories..."
   rm -rf /etc/dovecot /var/lib/dovecot /etc/postfix /etc/opendkim /var/lib/opendkim \
-         /etc/fail2ban/jail.d/mail.local /etc/letsencrypt/renewal-hooks/deploy/reload-mail-services.sh
+         /etc/fail2ban/jail.d/mail.local /etc/letsencrypt/renewal-hooks/deploy/reload-mail-services.sh \
+         /etc/mail-server /var/vmail \
+         /etc/lldap /var/lib/lldap /usr/local/share/lldap \
+         /root/lldap_admin /root/lldap_mail_reader /root/ldap-migration
+  rm -f /etc/systemd/system/lldap.service \
+        /usr/local/sbin/lldap /usr/local/sbin/lldap_set_password /usr/local/sbin/lldap_migration_tool
+  systemctl daemon-reload 2>/dev/null || true
+  userdel -r vmail 2>/dev/null || true
+  userdel    lldap 2>/dev/null || true
 
   arch=$(uname -m)
   echo "Architecture: ${arch}"
@@ -290,8 +299,10 @@ auth_username_format = %{user | username}
 
 protocols = imap pop3
 
-userdb system { driver = passwd }
-passdb default { driver = pam }
+userdb passwd {
+}
+passdb pam {
+}
 
 mail_driver = maildir
 mail_path = %{home}/Mail
@@ -613,7 +624,9 @@ Quick checks:
 }
 
 # === Run selected steps ===
-for n in 0 1 2 3 4 5 6; do
-  [ "$n" -lt "$START_STEP" ] && continue
-  "step${n}"
-done
+if [ -z "${MAIL_SERVER_SOURCED:-}" ]; then
+  for n in 0 1 2 3 4 5 6; do
+    [ "$n" -lt "$START_STEP" ] && continue
+    "step${n}"
+  done
+fi
