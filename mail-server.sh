@@ -46,12 +46,15 @@ write_postfix_ldap_cf() {
   local out="$1" filter="$2" attr="$3"
   local tls_req=no
   case "${LDAP_TLS_REQUIRE_CERT:-}" in demand|hard) tls_req=yes ;; esac
+  # Translate Dovecot-style %u (full username) into Postfix-style %s (full lookup key).
+  # In Postfix LDAP, %u expands to the LOCAL PART ONLY, which breaks mail-attribute matching.
+  local pg_filter="${filter//%u/%s}"
   local tmp="$out.tmp"
   (umask 0027 && {
     printf 'server_host = %s\n'      "$LDAP_URI"
     printf 'version = 3\n'
     printf 'search_base = %s\n'      "$LDAP_BASE_DN"
-    printf 'query_filter = %s\n'     "$filter"
+    printf 'query_filter = %s\n'     "$pg_filter"
     printf 'result_attribute = %s\n' "$attr"
     printf 'bind = yes\n'
     printf 'bind_dn = %s\n'          "$LDAP_BIND_DN"
