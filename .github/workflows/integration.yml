@@ -1,0 +1,93 @@
+name: Integration
+on:
+  push:
+    paths-ignore: ['**.md']
+  pull_request:
+    paths-ignore: ['**.md']
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    container:
+      image: debian:trixie
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install prerequisites
+        run: |
+          apt-get update -y
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            postfix postfix-pcre postfix-ldap \
+            dovecot-imapd dovecot-pop3d dovecot-sieve dovecot-ldap dovecot-lmtpd dovecot-managesieved \
+            opendkim opendkim-tools \
+            openssl ca-certificates bash bind9-host iproute2
+
+      - name: Syntax check
+        run: |
+          for f in *.sh; do bash -n "$f"; done
+
+      - name: Help works for every script
+        run: |
+          chmod +x *.sh
+          ./install.sh         --help
+          ./mail-server.sh     --help
+          ./ldap-server.sh     --help
+          ./migrate-to-ldap.sh --help
+          ./backup-mail.sh     --help
+
+      - name: Prepare fake environment
+        run: |
+          echo "example.com" > /etc/mailname
+          mkdir -p /etc/letsencrypt/live/mail.example.com
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+            -keyout /etc/letsencrypt/live/mail.example.com/privkey.pem \
+            -out   /etc/letsencrypt/live/mail.example.com/fullchain.pem \
+            -subj "/CN=mail.example.com" 2>/dev/null
+          cat > mail.env <<'EOF'
+          DNS_PROVIDER=cloudflare
+          DNS_CREDENTIALS_FILE=/tmp/dummy.ini
+          CERTBOT_EMAIL=ci@example.com
+          CERT_DOMAINS="mail.example.com"
+          DNS_PROPAGATION_SECONDS=10
+          EOF
+          : > ldap.env
+
+      - name: Postfix config writes and parses (system mode)
+        run: |
+          MAIL_SERVER_SOURCED=1 . ./mail-server.sh
+          step3
+          postconf -n
+          postconf check 2>&1 | grep -v 'warning:' || true
+
+      - name: Dovecot config writes and parses (system mode)
+        run: |
+          MAIL_SERVER_SOURCED=1 . ./mail-server.sh
+          step4
+          doveconf -n >/dev/null
+
+      - name: LDAP-mode config also parses
+        run: |
+          groupadd -g 5000 vmail || true
+          useradd -u 5000 -g 5000 -d /var/vmail -M -s /usr/sbin/nologin vmail || true
+          mkdir -p /var/vmail
+          mkdir -p /etc/mail-server
+          cat > /etc/mail-server/ldap.conf <<'EOF'
+          LDAP_ENABLED=1
+          LDAP_MODE=local
+          LDAP_URI=ldap://127.0.0.1:3890
+          LDAP_BASE_DN=dc=mail,dc=local
+          LDAP_BIND_DN=uid=admin,ou=people,dc=mail,dc=local
+          LDAP_BIND_PW=dummy
+          LDAP_USER_FILTER='(&(objectClass=person)(mail=%u))'
+          LDAP_USER_ATTR=mail
+          LDAP_TLS_CA=
+          LDAP_TLS_REQUIRE_CERT=never
+          LDAP_VMAIL_UID=5000
+          LDAP_QUOTA_DEFAULT=1G
+          LDAP_QUOTA_ATTR=
+          EOF
+          MAIL_SERVER_SOURCED=1 . ./mail-server.sh
+          step3
+          step4
+          postconf -n
+          doveconf -n >/dev/null

@@ -35,7 +35,7 @@ See [§4b LDAP integration](#4b-ldap-integration) for details.
 
 ## 0) What the scripts do (and how to resume)
 
-The repo ships **four** scripts:
+The repo ships **six** scripts:
 
 | Script                | Role                                                                                              |
 |-----------------------|---------------------------------------------------------------------------------------------------|
@@ -43,8 +43,10 @@ The repo ships **four** scripts:
 | `ldap-server.sh`      | LDAP backend setup. 4 steps (0..3). Writes `/etc/mail-server/ldap.conf` consumed by mail-server.  |
 | `mail-server.sh`      | Mail stack installer. 7 steps (0..6). Branches on `/etc/mail-server/ldap.conf` (system vs LDAP).  |
 | `migrate-to-ldap.sh`  | One-shot migration of existing system-mode mailboxes to LDAP virtual users.                       |
+| `healthcheck.sh`      | Read-only diagnostic: services up, configs parse, cert validity, listening ports, LDAP reachable, PTR records. Cron-friendly. |
+| `backup-mail.sh`      | Rolling backup of `/var/vmail`, LLDAP DB, `/etc/{dovecot,postfix,opendkim,lldap,mail-server}` to `/root/backups/mail-<stamp>.tar.gz`. |
 
-All scripts are idempotent and resumable.
+The first four are idempotent and resumable. `healthcheck.sh` and `backup-mail.sh` are operational tools (run after install / on schedule).
 
 ### `mail-server.sh` steps
 
@@ -319,8 +321,9 @@ When `LDAP_MODE=local`:
 
 - The LLDAP `.deb` is downloaded from the official GitHub release pinned by `LLDAP_VERSION`.
 - The LDAP service listens on `127.0.0.1:3890` (plain LDAP, loopback only). The web UI listens on `$LLDAP_HTTP_HOST:17170` (default `127.0.0.1`). Set `LLDAP_HTTP_HOST=0.0.0.0` in `ldap.env` to expose the UI on the LAN — the script then opens UFW port 17170 automatically. LDAPS is not enabled by default.
+- The web UI speaks **HTTP only** (LLDAP does not implement native TLS for the HTTP listener). For HTTPS, terminate TLS upstream (nginx/Caddy reverse-proxy in front of `:17170`). On a trusted LAN, plain HTTP is usually acceptable.
 - The admin credentials are written to **`/root/lldap_admin`** (mode 600).
-- Dovecot/Postfix bind as `uid=admin,ou=people,dc=mail,dc=local` (LLDAP's built-in admin). LLDAP does not support group-membership management via the LDAP protocol — only via GraphQL or the web UI — so a least-privilege service account would require GraphQL provisioning. Kept on the to-do list; for now the admin account is the bind identity.
+- Dovecot/Postfix bind as `uid=admin,ou=people,dc=mail,dc=local` (LLDAP's built-in admin). The mail stack only **reads** from LDAP, so the elevated write permissions of the admin account are never exercised. A dedicated read-only service account would require GraphQL provisioning (LLDAP refuses group-membership mutations via LDAP), which is intentionally not implemented — minimal payoff for the added complexity.
 - To reach the web UI from your workstation, SSH-tunnel it:
   ```bash
   ssh -L 17170:127.0.0.1:17170 youruser@mailserver
@@ -339,7 +342,7 @@ When `LDAP_MODE=local`:
 On a fresh Debian 13 / Raspberry Pi, after creating `mail.env` and `ldap.env`:
 
 ```bash
-chmod +x install.sh mail-server.sh ldap-server.sh migrate-to-ldap.sh
+chmod +x install.sh mail-server.sh ldap-server.sh migrate-to-ldap.sh healthcheck.sh backup-mail.sh
 sudo ./install.sh
 ```
 
@@ -579,9 +582,29 @@ Users can change their password later via the LLDAP web UI (`http://<ip>:17170` 
 
 ## 13) Client settings (examples)
 
-- **IMAP**: `mail.domain.tld`, **993**, SSL/TLS, authentication: normal password, username = system user.  
-- **SMTP (submission)**: `mail.domain.tld`, **587**, STARTTLS, authentication required.  
+- **IMAP**: `mail.domain.tld`, **993**, SSL/TLS, authentication: normal password.
+- **SMTP (submission)**: `mail.domain.tld`, **587**, STARTTLS, authentication required.
 - **POP3** (if used): `mail.domain.tld`, **995**, SSL/TLS.
+- **Username**: in system mode, the local UNIX login (e.g. `alice`). In LDAP mode (`external` or `local`), the **full email address** (e.g. `alice@domain.tld`).
+
+### Changing the password (LDAP mode)
+
+Users authenticated against LDAP can self-service their password through the LLDAP web UI.
+
+1. From a machine on the LAN, open `http://<server-ip>:17170` (only if `LLDAP_HTTP_HOST=0.0.0.0` was set in `ldap.env`).  
+   Otherwise, tunnel from your workstation:
+   ```bash
+   ssh -L 17170:127.0.0.1:17170 youruser@mail.domain.tld
+   # then open http://localhost:17170
+   ```
+2. Log in with the username (`uid` part, e.g. `alice`, **not** the full email) and the temporary password distributed after migration.
+3. Click your username (top right) → **Change password**.
+4. Re-authenticate in your mail client with the new password.
+
+Admins can also reset any user's password from the same UI (log in as `admin`, edit the user, **Reset password**). The temporary `passwords.txt` produced by `migrate-to-ldap.sh` should be shredded once distributed:
+```bash
+sudo shred -u /root/ldap-migration/passwords.txt
+```
 
 ---
 
@@ -607,6 +630,41 @@ It’s informational; issuance still works. Options: ignore, pin 2.19.*, or adop
 
 **SpamAssassin service errors** 
 On Debian 13, prefer `spamd.service` (package `spamd`). If it’s missing, install it; otherwise fall back to `spamassassin.service`.
+
+---
+
+## 14b) Operational tools
+
+### Health check
+
+```bash
+sudo ./healthcheck.sh
+```
+
+Prints `[ OK ]`/`[WARN]`/`[FAIL]` lines for each check and exits non-zero on the first hard failure. Suitable for a cron alert wrapper:
+
+```cron
+*/5 * * * * root /opt/mail-server/healthcheck.sh > /tmp/mail-health.log 2>&1 || mail -s "Mail health FAIL on $(hostname)" admin@domain.tld < /tmp/mail-health.log
+```
+
+Verifies: services active, `postconf -n`/`doveconf -n` parse, certificate validity (warns under 14 days to expiry), all expected ports listening, LDAP bind+search (in LDAP mode), `/var/vmail` ownership, PTR records for the mail FQDN.
+
+### Backups
+
+```bash
+sudo ./backup-mail.sh                              # /root/backups/mail-<stamp>.tar.gz, keeps the last 7
+sudo ./backup-mail.sh --output /mnt/usb --keep 30  # custom destination + retention
+sudo ./backup-mail.sh --keep 0                     # no rotation
+```
+
+Bundles `/var/vmail`, the LLDAP DB (via consistent `sqlite3 .backup` snapshot when present), `/etc/{dovecot,postfix,opendkim,lldap,mail-server}`, `/etc/aliases`, and `/root/lldap_admin`. Mode 600 on the tarball.
+
+Cron example (daily at 3am, keep 14):
+```cron
+0 3 * * * root /opt/mail-server/backup-mail.sh --keep 14 >/var/log/mail-backup.log 2>&1
+```
+
+> The backup is taken while services run — fine for restore-from-cold-start, but for a strict point-in-time snapshot, stop `dovecot` and `lldap` first.
 
 ---
 
