@@ -95,6 +95,14 @@ EOF
     echo "[move] $src -> $dst"
   fi
   chown -R vmail:vmail "$dst_parent"
+
+  home="/home/${user}"
+  for orphan in "$home/.dovecot.svbin" "$home/.dovecot.sieve" "$home/.subscriptions" "$home/dovecot-uidlist"; do
+    if [ -e "$orphan" ] || [ -L "$orphan" ]; then
+      rm -f "$orphan"
+      echo "  [clean] removed $orphan"
+    fi
+  done
 done
 
 if [ "$count" -eq 0 ]; then
@@ -159,6 +167,13 @@ case "${LDAP_MODE:-external}" in
         echo "  $uid: WARNING password set failed" >&2
       fi
     done < "$PWFILE"
+
+    if systemctl is-active --quiet dovecot; then
+      doveadm quota recalc -A 2>/dev/null || true
+      echo "[migrate] Quota recalculated for all users."
+    else
+      echo "[migrate] Run 'doveadm quota recalc -A' after restarting Dovecot."
+    fi
 
     cat <<EOF
 
