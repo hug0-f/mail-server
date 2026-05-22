@@ -255,6 +255,17 @@ Uncomment only the variables whose defaults you want to change.
 - **`TRUSTED_NETS`** (default empty) — Space-separated CIDR list added to OpenDKIM `TrustedHosts` alongside `127.0.0.1`. Hosts in these networks can relay mail through your server **without DKIM signing**. Leave empty unless you want to relay from your LAN. Typical home value: `"192.168.1.0/24"`.
 - **`DNS_OUTPUT_FILE`** (default `/root/dns_mail`) — File where step 5 writes the SPF/DKIM/DMARC/MX records you must publish. Change only if you want the summary elsewhere.
 
+#### SMTP relay (smart host) overrides
+
+If outbound port 25 is blocked (residential ISP) or you want all outgoing mail to go through an authenticated relay (Mailgun, SendGrid, AnyMTA, your ISP, etc.), set these in `mail.env`:
+
+- **`RELAYHOST`** — Relay hostname. When set, Postfix is configured with `relayhost = [${RELAYHOST}]:${RELAY_PORT}`. Leaving it empty (or unset) disables the relay and clears any previously written SASL credentials.
+- **`RELAY_PORT`** (default `587`) — Submission port on the relay.
+- **`RELAY_USER`** / **`RELAY_PASS`** — Auth credentials for the relay. When both are set, `/etc/postfix/sasl_passwd` is written (mode 600) and `postmap`-ed. Leave both empty for an unauthenticated relay.
+- **`RELAY_TLS_LEVEL`** (default `encrypt`) — Value applied to `smtp_tls_security_level`. Use `encrypt` to require TLS toward the relay (recommended).
+
+Re-running `mail-server.sh` with `RELAYHOST` removed cleanly undoes the relay configuration. See [§16 SMTP Relay Configuration Guide](#16-smtp-relay-configuration-guide-postfix--dovecot) for background and the manual-flow alternative.
+
 > The package list also includes `ufw`; it is installed automatically if missing so the firewall rules added in step 5 actually take effect.
 
 ---

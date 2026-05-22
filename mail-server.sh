@@ -87,6 +87,12 @@ certbot_email="${CERTBOT_EMAIL:-}"
 trusted_nets="${TRUSTED_NETS:-}"
 dns_out="${DNS_OUTPUT_FILE:-/root/dns_mail}"
 
+relayhost="${RELAYHOST:-}"
+relay_user="${RELAY_USER:-}"
+relay_pass="${RELAY_PASS:-}"
+relay_port="${RELAY_PORT:-587}"
+relay_tls="${RELAY_TLS_LEVEL:-encrypt}"
+
 # === LDAP integration (loaded from ldap-server.sh output if present) ===
 LDAP_SHARED_CONF="/etc/mail-server/ldap.conf"
 LDAP_ENABLED=0
@@ -250,13 +256,34 @@ step3() {
   postconf -e 'smtpd_helo_required = yes'
   postconf -e 'smtpd_helo_restrictions = permit_sasl_authenticated, permit_mynetworks, reject_invalid_helo_hostname, reject_non_fqdn_helo_hostname, reject_unknown_helo_hostname'
 
+  if [ -n "$relayhost" ]; then
+    postconf -e "relayhost = [${relayhost}]:${relay_port}"
+    postconf -e 'smtp_sasl_auth_enable = yes'
+    postconf -e 'smtp_sasl_password_maps = hash:/etc/postfix/sasl_passwd'
+    postconf -e 'smtp_sasl_security_options = noanonymous'
+    postconf -e 'smtp_sasl_mechanism_filter = plain, login'
+    postconf -e "smtp_tls_security_level = ${relay_tls}"
+    if [ -n "$relay_user" ] && [ -n "$relay_pass" ]; then
+      (umask 0077 && printf '[%s]:%s %s:%s\n' "$relayhost" "$relay_port" "$relay_user" "$relay_pass" > /etc/postfix/sasl_passwd)
+      chmod 600 /etc/postfix/sasl_passwd
+      postmap /etc/postfix/sasl_passwd
+    fi
+  else
+    postconf -X relayhost                  2>/dev/null || true
+    postconf -X smtp_sasl_auth_enable      2>/dev/null || true
+    postconf -X smtp_sasl_password_maps    2>/dev/null || true
+    postconf -X smtp_sasl_security_options 2>/dev/null || true
+    postconf -X smtp_sasl_mechanism_filter 2>/dev/null || true
+    rm -f /etc/postfix/sasl_passwd /etc/postfix/sasl_passwd.db
+  fi
+
   echo "/^Received:.*/     IGNORE
 /^X-Originating-IP:/    IGNORE" > /etc/postfix/header_checks
   postconf -e "header_checks = regexp:/etc/postfix/header_checks"
 
   awk '
     /^[a-zA-Z]/ {
-      skip = ($1 == "smtp" || $1 == "smtps" || $1 == "submission" || $1 == "spamassassin") ? 1 : 0
+      skip = (($1 == "smtp" && $2 == "inet") || $1 == "smtps" || $1 == "submission" || $1 == "spamassassin") ? 1 : 0
     }
     !skip { print }
   ' /etc/postfix/master.cf > /etc/postfix/master.cf.new && mv /etc/postfix/master.cf.new /etc/postfix/master.cf
