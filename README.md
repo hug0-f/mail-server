@@ -450,6 +450,19 @@ The script:
 
 ---
 
+## 8b) Fail2ban defaults
+
+Step 6 writes two jail files:
+
+- `/etc/fail2ban/jail.d/mail.local` — enables the `postfix`, `postfix-sasl`, `sieve`, `dovecot` jails.
+- `/etc/fail2ban/jail.d/zz-custom.local` — global `[DEFAULT]` hardening (bantime = 1h growing exponentially up to a week, findtime = 10m, maxretry = 5) plus a `[recidive]` jail that bans repeat offenders for 4 weeks. The `zz-` prefix makes Fail2ban load it last so its `[DEFAULT]` block overrides the package defaults.
+
+`ignoreip` is set to `127.0.0.1/8 ::1 ${TRUSTED_NETS}` — your `TRUSTED_NETS` value from `mail.env` is reused here, so your LAN is exempt from bans by default.
+
+Both files are written only if absent (re-running the script doesn't overwrite local edits). They are removed by the step 0 purge.
+
+---
+
 ## 9) SpamAssassin service name on Debian 13
 
 Debian 12/13 commonly ship a **`spamd`** systemd unit (package `spamd`), not `spamassassin.service`.  

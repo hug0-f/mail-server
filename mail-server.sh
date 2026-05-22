@@ -139,7 +139,7 @@ step0() {
 
   echo "Cleaning legacy configuration directories..."
   rm -rf /etc/dovecot /var/lib/dovecot /etc/postfix /etc/opendkim /var/lib/opendkim \
-         /etc/fail2ban/jail.d/mail.local /etc/letsencrypt/renewal-hooks/deploy/reload-mail-services.sh \
+         /etc/fail2ban/jail.d/mail.local /etc/fail2ban/jail.d/zz-custom.local /etc/letsencrypt/renewal-hooks/deploy/reload-mail-services.sh \
          /etc/mail-server /var/vmail \
          /etc/lldap /var/lib/lldap /usr/local/share/lldap \
          /root/lldap_admin /root/lldap_mail_reader /root/ldap-migration
@@ -625,6 +625,26 @@ enabled = true
 [dovecot]
 enabled = true
 EOF
+
+  # zz- prefix ensures this loads last and its [DEFAULT] overrides earlier jails.
+  [ ! -f /etc/fail2ban/jail.d/zz-custom.local ] && cat >/etc/fail2ban/jail.d/zz-custom.local <<EOF
+[DEFAULT]
+bantime = 1h
+findtime = 10m
+maxretry = 5
+bantime.increment = true
+bantime.factor = 2
+bantime.maxtime = 1w
+
+ignoreip = 127.0.0.1/8 ::1 ${trusted_nets:-}
+
+[recidive]
+enabled = true
+bantime = 4w
+findtime = 1d
+maxretry = 3
+EOF
+
   sed -i 's/^backend = auto$/backend = systemd/' /etc/fail2ban/jail.conf || true
 
   systemctl daemon-reload
