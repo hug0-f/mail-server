@@ -120,6 +120,14 @@ echo "Migration done. $count user(s) processed."
 echo "Files generated (mode 600):"
 echo "  $LDIF"
 echo "  $PWFILE"
+
+for root_mail in /root/Maildir /root/Mail; do
+  if [ -d "$root_mail" ]; then
+    echo
+    echo "WARNING: $root_mail exists and was NOT migrated (root is UID 0, below the 1000 floor)."
+    echo "         If this mailbox is obsolete, remove it: sudo rm -rf $root_mail"
+  fi
+done
 echo
 case "${LDAP_MODE:-external}" in
   local)
