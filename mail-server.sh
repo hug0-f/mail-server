@@ -562,7 +562,7 @@ EOF
     postconf -e 'mailbox_command = /usr/lib/dovecot/dovecot-lda'
   fi
 
-  for port in 25 465 587 993 110 995 4190; do ufw_allow "$port"; done
+  for port in 25 465 587 993 110 995 4190; do ufw_allow "${port}/tcp"; done
 
   ipv4=$(host "$domain" | grep -m1 -Eo '([0-9]+\.){3}[0-9]+') || true
   ipv6=$(host "$domain" | awk '/IPv6/{print $NF; exit}') || true
