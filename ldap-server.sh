@@ -320,7 +320,9 @@ step3() {
 }
 
 # === Run selected steps ===
-for n in 0 1 2 3; do
-  [ "$n" -lt "$START_STEP" ] && continue
-  "step${n}"
-done
+if [ -z "${LDAP_SERVER_SOURCED:-}" ]; then
+  for n in 0 1 2 3; do
+    [ "$n" -lt "$START_STEP" ] && continue
+    "step${n}"
+  done
+fi

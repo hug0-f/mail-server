@@ -1,6 +1,7 @@
 CLAUDE.md
 
 mail.env
+ldap.env
 dns_mail
 sasl_passwd
 sasl_passwd.db
