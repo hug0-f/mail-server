@@ -10,6 +10,9 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: debian:trixie
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v6
 
